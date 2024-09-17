@@ -10,6 +10,7 @@
 #include "threads/palloc.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "devices/timer.h"
 #include "intrinsic.h"
 #ifdef USERPROG
 #include "userprog/process.h"
@@ -27,6 +28,11 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
+static struct list sleep_list; // List of processes in sleeping
+
+bool comp_wake_ticks (const struct list_elem *a,
+                             const struct list_elem *b,
+                             void *aux);
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -108,6 +114,7 @@ thread_init (void) {
 	/* Init the globla thread context */
 	lock_init (&tid_lock);
 	list_init (&ready_list);
+    list_init (&sleep_list);
 	list_init (&destruction_req);
 
 	/* Set up a thread structure for the running thread. */
@@ -138,6 +145,9 @@ thread_start (void) {
 void
 thread_tick (void) {
 	struct thread *t = thread_current ();
+    struct list_elem *e = list_begin (&sleep_list);
+    struct thread *tmp;
+    int64_t curr_ticks = timer_ticks ();
 
 	/* Update statistics. */
 	if (t == idle_thread)
@@ -148,6 +158,21 @@ thread_tick (void) {
 #endif
 	else
 		kernel_ticks++;
+
+    for (
+        e = list_begin(&sleep_list);
+        e != list_end(&sleep_list);
+    ) {
+        tmp = list_entry (e, struct thread, elem);
+
+        if (tmp->wake_ticks <= curr_ticks) {
+            ASSERT(tmp->status == THREAD_BLOCKED);
+            list_pop_front(&sleep_list);
+            e = list_begin(&sleep_list);
+            thread_unblock (tmp);
+        }
+        else break;
+    }
 
 	/* Enforce preemption. */
 	if (++thread_ticks >= TIME_SLICE)
@@ -290,6 +315,29 @@ thread_exit (void) {
 	intr_disable ();
 	do_schedule (THREAD_DYING);
 	NOT_REACHED ();
+}
+
+bool
+comp_wake_ticks (const struct list_elem *a,
+                const struct list_elem *b, void *aux) {
+    struct thread *thread_a = list_entry (a, struct thread, elem);
+    struct thread *thread_b = list_entry (b, struct thread, elem);
+
+    return thread_a->wake_ticks < thread_b->wake_ticks;
+}
+
+void
+thread_sleep (void) {
+    struct thread *curr = thread_current ();
+    enum intr_level old_level;
+
+    ASSERT (!intr_context ());
+    old_level = intr_disable ();
+    if (curr != idle_thread) {
+        list_insert_ordered (&sleep_list, &curr->elem, comp_wake_ticks, NULL);
+        thread_block();
+    }
+    intr_set_level (old_level);
 }
 
 /* Yields the CPU.  The current thread is not put to sleep and

@@ -90,11 +90,19 @@ timer_elapsed (int64_t then) {
 /* Suspends execution for approximately TICKS timer ticks. */
 void
 timer_sleep (int64_t ticks) {
+    struct thread *t = thread_current ();
 	int64_t start = timer_ticks ();
+    int64_t wake_ticks = start + ticks;
+
+    t->wake_ticks = wake_ticks;
 
 	ASSERT (intr_get_level () == INTR_ON);
-	while (timer_elapsed (start) < ticks)
-		thread_yield ();
+    if (timer_elapsed (start) < ticks) {
+        thread_sleep ();
+    }
+    
+	// while (timer_elapsed (start) < ticks)
+	// 	thread_yield ();
 }
 
 /* Suspends execution for approximately MS milliseconds. */
