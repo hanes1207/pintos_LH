@@ -93,6 +93,8 @@ struct thread {
 	int priority;                       /* Priority. */
     int64_t wake_ticks;                 /* tick leftover until wake up */
 
+	//TODO : Need to save donated priorities.
+
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
 

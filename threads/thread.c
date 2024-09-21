@@ -360,11 +360,15 @@ thread_yield (void) {
 void
 thread_set_priority (int new_priority) {
 	thread_current ()->priority = new_priority;
+	//TODO : If priority change for this thread makes difference in max(ready_list->priority),
+	//	Then this thread should yield.
 }
 
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) {
+	//TODO : For priority donation implementation, 
+	//	This function should calculate its priority using "donated" priorities.
 	return thread_current ()->priority;
 }
 
@@ -469,6 +473,8 @@ next_thread_to_run (void) {
 	if (list_empty (&ready_list))
 		return idle_thread;
 	else
+		//TODO : Instead of just pop front, pop most significant priority.
+		//	-> Priority should be calculated by thread_priority or something similar, not just read struct's value.
 		return list_entry (list_pop_front (&ready_list), struct thread, elem);
 }
 
