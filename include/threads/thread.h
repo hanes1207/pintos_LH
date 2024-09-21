@@ -94,6 +94,17 @@ struct thread {
     int64_t wake_ticks;                 /* tick leftover until wake up */
 
 	//TODO : Need to save donated priorities.
+	int dpriority;	
+		//lock_acquire & lock_release is responsible 
+		//for call 
+		//		(acquire) thread_dpriority_update_acquire(struct thread* th, int new_dpriority);
+		//		(release) thread_dpriority_update_release(struct thread* th, struct list * waiters);
+		//For acquire case, update must be done BEFORE sema_down();	(sema_down stalls this thread)
+		//For release case, update must be done AFTER sema_up();	(sema_up makes change in waiters)
+		//For both case, for dpriority change, like priority change,
+		//	If this thread is no longer "max-priority thread", then yield immediately
+		//	-> Only release case can change priority and if dpriority is same, then just go on.
+
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
