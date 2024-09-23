@@ -306,7 +306,9 @@ lock_held_by_current_thread (const struct lock *lock) {
 }
 
 /* One semaphore in a list. */
+
 struct semaphore_elem {
+   int priority;
 	struct list_elem elem;              /* List element. */
 	struct semaphore semaphore;         /* This semaphore. */
 };
@@ -341,6 +343,16 @@ cond_init (struct condition *cond) {
    interrupt handler.  This function may be called with
    interrupts disabled, but interrupts will be turned back on if
    we need to sleep. */
+bool comp_sema_elem_priority(
+   const struct list_elem *a,
+   const struct list_elem *b,
+   void *aux UNUSED
+){
+   const struct semaphore_elem *e_a = list_entry(a, struct semaphore_elem, elem);
+   const struct semaphore_elem *e_b = list_entry(b, struct semaphore_elem, elem);
+   return e_a->priority > e_b->priority;
+}
+
 void
 cond_wait (struct condition *cond, struct lock *lock) {
 	struct semaphore_elem waiter;
@@ -351,7 +363,10 @@ cond_wait (struct condition *cond, struct lock *lock) {
 	ASSERT (lock_held_by_current_thread (lock));
 
 	sema_init (&waiter.semaphore, 0);
-	list_push_back (&cond->waiters, &waiter.elem);
+   waiter.priority = thread_get_priority();
+
+   list_insert_ordered (&cond->waiters, &waiter.elem, comp_sema_elem_priority,NULL);
+	//list_push_back (&cond->waiters, &waiter.elem);
 	lock_release (lock);
 	sema_down (&waiter.semaphore);
 	lock_acquire (lock);
