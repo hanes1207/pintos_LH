@@ -108,9 +108,10 @@ struct thread {
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
-    struct list locks;                  /* for Priority donation return(If 2 locks made donation, 
+    struct list locks;                  /*  Holding locks
+											For Priority donation return(If 2 locks made donation, 
                                             then 1 lock released, other lock's donation info must be present. */
-    void *lock_ptr;
+    void *lock_ptr;						// Lock's pointer who stalls this thread.
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
