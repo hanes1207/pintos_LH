@@ -114,6 +114,7 @@ sema_up (struct semaphore *sema) {
 
 	old_level = intr_disable ();
 	if (!list_empty (&sema->waiters)) {
+      list_sort(&sema->waiters, comp_priority,NULL);
         struct thread* to_wake_thread = list_entry (list_pop_front (&sema->waiters),
 					                                struct thread, elem);
 		thread_unblock (to_wake_thread);
@@ -212,6 +213,7 @@ lock_acquire (struct lock *lock) {
       //Give priority
       if(holder->dpriority < priority_curr){
          holder->dpriority = priority_curr;
+         //
       }
       
       //Check if it doesn't have holding lock.
