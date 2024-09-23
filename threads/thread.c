@@ -367,7 +367,9 @@ thread_yield (void) {
 
 	old_level = intr_disable ();
 	if (curr != idle_thread)
-		list_push_back (&ready_list, &curr->elem);
+		//Trap! without modify this, cannot actually do priority scheduling
+		list_insert_ordered(&ready_list, &curr->elem, comp_priority, NULL);
+		//list_push_back (&ready_list, &curr->elem);
 	do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
@@ -499,10 +501,10 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
     t->dpriority = PRI_MIN;
-	t->lock_ptr = NULL;
 	t->magic = THREAD_MAGIC;
 
 	list_init(&t->locks);
+	t->lock_ptr = NULL;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

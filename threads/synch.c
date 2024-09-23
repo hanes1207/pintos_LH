@@ -201,11 +201,9 @@ lock_acquire (struct lock *lock) {
    enum intr_level old_level = intr_disable();
    const int priority_curr = thread_get_priority ();
    thread_current()->lock_ptr = (void*)lock;
-   list_push_back(&thread_current()->locks, &lock->elem);
 
    int counter = 0;
    struct thread* holder = lock->holder;
-
    
    while(holder!=NULL && counter < PRIORITY_DONATION_DEPTH_LIMIT){
       //Give priority
@@ -219,10 +217,16 @@ lock_acquire (struct lock *lock) {
       holder = ((struct lock*)holder->lock_ptr)->holder;
       counter++;
    }
+
    intr_set_level(old_level);
 	sema_down (&lock->semaphore);
+
 	lock->holder = thread_current ();
-    thread_current()->lock_ptr = NULL;
+   list_push_back(&(thread_current()->locks), &(lock->elem));
+   ASSERT(lock->elem.prev != NULL);
+   ASSERT(lock->elem.next != NULL);
+
+   thread_current()->lock_ptr = NULL;
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -264,24 +268,28 @@ lock_release (struct lock *lock) {
    list_remove(&(lock->elem));
    //나머지 락에 대해서 waiters 첫 번째 스레드의 priority를 구해서 그 중 최댓값 구하기
    int dpriority_max = PRI_MIN;
-   for(
-      struct list_elem* it = list_begin(holder_locks);
-      it != list_end(holder_locks);
-      it = list_next(it)
-   ){
-      ASSERT(!list_empty(holder_locks));
-      struct lock* got_lock = list_entry(it, struct lock, elem);
-      if(!list_empty(&got_lock->semaphore.waiters)){
-         //this_lock_dpriority is defined by max(lock.waiters.priority)
-         int this_lock_dpriority = thread_get_arbitrary_priority(
-            list_entry(list_front(&got_lock->semaphore.waiters), struct thread, elem)
-         );
-         //Update
-         if(dpriority_max < this_lock_dpriority){
-            dpriority_max = this_lock_dpriority;
+
+   if(!list_empty(holder_locks)){
+      for(
+         struct list_elem* it = list_begin(holder_locks);
+         it != list_end(holder_locks);
+         it = list_next(it)
+      ){
+         const struct lock* got_lock = list_entry(it, struct lock, elem);
+         const struct list* got_lock_waiters = &got_lock->semaphore.waiters;
+         if(!list_empty(got_lock_waiters)){
+            //this_lock_dpriority is defined by max(lock.waiters.priority)
+            int this_lock_dpriority = thread_get_arbitrary_priority(
+               list_entry(list_front(got_lock_waiters), struct thread, elem)
+            );
+            //Update
+            if(dpriority_max < this_lock_dpriority){
+               dpriority_max = this_lock_dpriority;
+            }
          }
       }
    }
+   lock->holder->dpriority = dpriority_max;
    intr_set_level(old_level);
 	lock->holder = NULL;
 	sema_up (&lock->semaphore);
