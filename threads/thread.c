@@ -31,8 +31,11 @@ static struct list ready_list;
 static struct list sleep_list; // List of processes in sleeping
 
 bool comp_wake_ticks (const struct list_elem *a,
-                             const struct list_elem *b,
-                             void *aux);
+                            const struct list_elem *b,
+                            void *aux UNUSED);
+bool comp_priority (const struct list_elem *a,
+                            const struct list_elem *b,
+                            void *aux UNUSED);
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -231,6 +234,8 @@ thread_create (const char *name, int priority,
 
 	/* Add to run queue. */
 	thread_unblock (t);
+    if (thread_get_priority () < priority)
+        thread_yield ();
 
 	return tid;
 }
@@ -265,7 +270,7 @@ thread_unblock (struct thread *t) {
 
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
-	list_push_back (&ready_list, &t->elem);
+    list_insert_ordered (&ready_list, &t->elem, comp_priority, NULL);
 	t->status = THREAD_READY;
 	intr_set_level (old_level);
 }
@@ -325,6 +330,17 @@ comp_wake_ticks (const struct list_elem *a,
 
     return thread_a->wake_ticks < thread_b->wake_ticks;
 }
+bool
+comp_priority (const struct list_elem *a,
+                const struct list_elem *b, void *aux UNUSED) {
+    struct thread *thread_a = list_entry (a, struct thread, elem);
+    struct thread *thread_b = list_entry (b, struct thread, elem);
+
+    int priority_a = thread_get_arbitrary_priority (thread_a);
+    int priority_b = thread_get_arbitrary_priority (thread_b);
+
+    return (priority_a > priority_b);
+}
 
 void
 thread_sleep (void) {
@@ -359,9 +375,18 @@ thread_yield (void) {
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) {
-	thread_current ()->priority = new_priority;
 	//TODO : If priority change for this thread makes difference in max(ready_list->priority),
 	//	Then this thread should yield.
+    struct thread* curr = thread_current ();
+    struct list_elem *e = list_begin (&sleep_list);
+    struct thread *tmp = list_entry (e, struct thread, elem);
+    int priority_tmp = tmp->priority;
+    int dpriority_tmp = tmp->dpriority;
+
+    curr->priority = new_priority;
+    if (new_priority < priority_tmp || new_priority < dpriority_tmp) {
+        thread_yield ();
+    }
 }
 
 /* Returns the current thread's priority. */
@@ -369,7 +394,20 @@ int
 thread_get_priority (void) {
 	//TODO : For priority donation implementation, 
 	//	This function should calculate its priority using "donated" priorities.
-	return thread_current ()->priority;
+    struct thread *t = thread_current();
+
+    return thread_get_arbitrary_priority (t);
+}
+
+/* Returns the current thread's priority. */
+int
+thread_get_arbitrary_priority (const struct thread *t) {
+	//TODO : For priority donation implementation, 
+	//	This function should calculate its priority using "donated" priorities.
+    int priority = t->priority;
+    int dpriority = t->dpriority;
+
+	return (priority > dpriority ? priority : dpriority);
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -460,6 +498,7 @@ init_thread (struct thread *t, const char *name, int priority) {
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
+    t->dpriority = PRI_MIN;
 	t->magic = THREAD_MAGIC;
 }
 
