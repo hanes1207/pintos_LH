@@ -67,7 +67,10 @@ sema_down (struct semaphore *sema) {
 
 	old_level = intr_disable ();
 	while (sema->value == 0) {
-        list_insert_ordered (&sema->waiters, &thread_current ()->elem, comp_priority, NULL);
+      //For BSD scheduling, it might be fixed to push_back and
+      // in sema_up, pop "Most significant priority"
+      // due to changing priority.
+      list_insert_ordered (&sema->waiters, &thread_current ()->elem, comp_priority, NULL);
 		thread_block ();
 	}
 	sema->value--;
