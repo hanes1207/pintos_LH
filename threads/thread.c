@@ -234,8 +234,11 @@ thread_create (const char *name, int priority,
 
 	/* Add to run queue. */
 	thread_unblock (t);
-    if (thread_get_priority () < priority)
-        thread_yield ();
+
+	if(!thread_mlfqs){
+    	if (thread_get_priority () < priority)
+        	thread_yield ();
+	}
 
 	return tid;
 }
@@ -366,10 +369,15 @@ thread_yield (void) {
 	ASSERT (!intr_context ());
 
 	old_level = intr_disable ();
-	if (curr != idle_thread)
-		//Trap! without modify this, cannot actually do priority scheduling
-		list_insert_ordered(&ready_list, &curr->elem, comp_priority, NULL);
-		//list_push_back (&ready_list, &curr->elem);
+	if (curr != idle_thread){
+		if(!thread_mlfqs){
+			//Priority Scheduling Case
+			list_insert_ordered(&ready_list, &curr->elem, comp_priority, NULL);
+		} else {
+			//TODO : mlfqs Case
+			list_push_back (&ready_list, &curr->elem);
+		}
+	}
 	do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
@@ -377,28 +385,38 @@ thread_yield (void) {
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) {
-	//TODO : If priority change for this thread makes difference in max(ready_list->priority),
-	//	Then this thread should yield.
-    struct thread* curr = thread_current ();
-    struct list_elem *e = list_begin (&sleep_list);
-    struct thread *tmp = list_entry (e, struct thread, elem);
-    int priority_tmp = tmp->priority;
-    int dpriority_tmp = tmp->dpriority;
+	if(!thread_mlfqs){
+		//If priority change for this thread makes difference in max(ready_list->priority),
+		//	Then this thread should yield.
+		struct thread* curr = thread_current ();
+		struct list_elem *e = list_begin (&sleep_list);
+		struct thread *tmp = list_entry (e, struct thread, elem);
+		int priority_tmp = tmp->priority;
+		int dpriority_tmp = tmp->dpriority;
 
-    curr->priority = new_priority;
-    if (new_priority < priority_tmp || new_priority < dpriority_tmp) {
-        thread_yield ();
-    }
+		curr->priority = new_priority;
+		if (new_priority < priority_tmp || new_priority < dpriority_tmp) {
+			thread_yield ();
+		}
+	} else {
+		// TODO : mlfqs
+
+	}
 }
 
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) {
-	//TODO : For priority donation implementation, 
-	//	This function should calculate its priority using "donated" priorities.
-    struct thread *t = thread_current();
-
-    return thread_get_arbitrary_priority (t);
+	if(!thread_mlfqs){
+		//Priority Scheduler
+		//For priority donation implementation, 
+		//	This function should calculate its priority using "donated" priorities.
+		struct thread *t = thread_current();
+    	return thread_get_arbitrary_priority (t);
+	} else {
+		//TODO : mlfqs
+		return PRI_DEFAULT;
+	}
 }
 
 /* Returns the current thread's priority. */
@@ -499,7 +517,12 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->status = THREAD_BLOCKED;
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
-	t->priority = priority;
+
+	if(!thread_mlfqs)
+		t->priority = priority;	//Priority
+	else
+		t->priority = PRI_DEFAULT;	//mlfqs
+
     t->dpriority = PRI_MIN;
 	t->magic = THREAD_MAGIC;
 
@@ -516,10 +539,15 @@ static struct thread *
 next_thread_to_run (void) {
 	if (list_empty (&ready_list))
 		return idle_thread;
-	else
-		//TODO : Instead of just pop front, pop most significant priority.
-		//	-> Priority should be calculated by thread_priority or something similar, not just read struct's value.
-		return list_entry (list_pop_front (&ready_list), struct thread, elem);
+	else{
+		if(!thread_mlfqs){
+			//Priority Scheduling
+			return list_entry (list_pop_front (&ready_list), struct thread, elem);
+		} else {
+			//TODO : mlfqs
+			return list_entry (list_pop_front (&ready_list), struct thread, elem);
+		}
+	}
 }
 
 /* Use iretq to launch the thread */

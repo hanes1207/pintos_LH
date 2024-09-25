@@ -104,6 +104,10 @@ struct thread {
 		//For both case, for dpriority change, like priority change,
 		//	If this thread is no longer "max-priority thread", then yield immediately
 		//	-> Only release case can change priority and if dpriority is same, then just go on.
+	
+	//For mlfqs
+	int recent_cpu;
+	int nice;
 
 
 	/* Shared between thread.c and synch.c. */
