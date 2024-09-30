@@ -24,6 +24,11 @@
  *   - thread_unblock()		-> ready thread 추가되므로 +1
  * 2. mlfqs_fp_load_avg		-> 
  * 3. mlfqs_max_priority	->
+ * 4. mlfqs_ready_list		-> 기존에 ready_list을 쓰던 모든 부분을 대체해야 함.
+ * 		-> thread_unblock
+ * 		-> thread_yield
+ * 		-> next_thread_to_run
+ * 		
  */
 
 /* Random value for struct thread's `magic' member.
@@ -333,11 +338,15 @@ thread_unblock (struct thread *t) {
 
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
-    list_insert_ordered (&ready_list, &t->elem, comp_priority, NULL);
-	t->status = THREAD_READY;
-
-	if(thread_mlfqs)
+	if(thread_mlfqs){
+		//TODO : Insert into appropriate queue.
 		mlfqs_i_ready_threads++;
+	}
+	else {
+		list_insert_ordered (&ready_list, &t->elem, comp_priority, NULL);
+	}
+	t->status = THREAD_READY;
+		
 	intr_set_level (old_level);
 }
 
