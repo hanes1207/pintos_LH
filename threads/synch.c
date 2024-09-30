@@ -46,8 +46,13 @@ void
 sema_init (struct semaphore *sema, unsigned value) {
 	ASSERT (sema != NULL);
 
+   enum intr_level old_level = intr_disable();
 	sema->value = value;
 	list_init (&sema->waiters);
+   if(thread_mlfqs){
+      list_push_back(&sema_list, &sema->elem);
+   }
+   intr_set_level(old_level);
 }
 
 /* Down or "P" operation on a semaphore.  Waits for SEMA's value
