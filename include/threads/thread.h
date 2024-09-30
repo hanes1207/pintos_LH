@@ -134,9 +134,11 @@ struct thread {
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
+struct list sema_list;	// List of semaphores
 
 void thread_init (void);
 void thread_start (void);
+void thread_print_ready_queue(void);
 
 void thread_tick (void);
 void thread_print_stats (void);
