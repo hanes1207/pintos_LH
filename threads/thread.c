@@ -22,13 +22,24 @@
  *   - thread_yield()		-> running thread가 ready가 되므로 +1
  *   - next_thread_to_run() -> ready 중 하나가 running이 되므로 -1
  *   - thread_unblock()		-> ready thread 추가되므로 +1
- * 2. mlfqs_fp_load_avg		-> 
- * 3. mlfqs_max_priority	->
+ * 
+ * 2. mlfqs_fp_load_avg		-> thread_tick에서 관리
+ * 
+ * 3. mlfqs_max_priority	-> 대기 중인 스레드의 max_priority가 의미가 있는데, 이를 하다보면
+ * 너무 할 게 늘어난다. -> 때려쳐
+ *  --> bsd reschedule 할 때
+ *  --> set_nice 할 때
+ *  --> 새 thread 생성 o
+ * 
  * 4. mlfqs_ready_list		-> 기존에 ready_list을 쓰던 모든 부분을 대체해야 함.
  * 		-> thread_unblock
  * 		-> thread_yield
  * 		-> next_thread_to_run
  * 		
+ * ToDo
+ * thread yield --> cpu 양보하기 전에 나를 넣어놓고 가야 한다.
+ * sema up - 깨어난 놈의 priority를 체크해야 한다.
+ * next_thread_to_run - ready list로 되어 있던데 고쳐야 하고
  */
 
 /* Random value for struct thread's `magic' member.
@@ -43,7 +54,7 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
-static int mlfqs_max_priority;
+//static int mlfqs_max_priority;
 static struct list mlfqs_ready_list[64];
 static struct list sleep_list; // List of processes in sleeping
 
@@ -61,6 +72,12 @@ void update_recent_cpu_per_sec (struct thread *t);
 void update_recent_cpu_per_tick (void);
 void update_load_avg (void);
 int  thread_get_bsd_priority(const struct thread *t);
+
+//Interrupts must be disabled for these mlfqs helper methods.
+static struct thread* mlfqs_next_to_run();
+static int mlfqs_ready_list_max_priority (void);
+void mlfqs_insert_thread(struct thread* t);
+
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -161,7 +178,7 @@ thread_init (void) {
 
 		//Initialize global info.
 		mlfqs_fp_load_avg = 0;
-		mlfqs_i_ready_threads = 1;
+		mlfqs_i_ready_threads = 0;
 	}
 }
 
@@ -189,6 +206,9 @@ thread_tick (void) {
     struct list_elem *e = list_begin (&sleep_list);
     struct thread *tmp;
     int64_t curr_ticks = timer_ticks ();
+
+	if(thread_mlfqs)
+		ASSERT(list_empty(&ready_list));
 
 	/* Update statistics. */
 	if (t == idle_thread)
@@ -270,14 +290,13 @@ thread_create (const char *name, int priority,
 		return TID_ERROR;
 
 	/* Initialize thread. */
-	init_thread (t, name, priority);
-	tid = t->tid = allocate_tid ();
-
 	if(thread_mlfqs){
 		t->mlfqs_i_nice = thread_get_nice();
 		t->mlfqs_fp_recent_cpu = 0;
 	}
-		
+
+	init_thread (t, name, priority);
+	tid = t->tid = allocate_tid ();
 
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
@@ -291,6 +310,7 @@ thread_create (const char *name, int priority,
 	t->tf.eflags = FLAG_IF;
 
 	/* Add to run queue. */
+	enum intr_level old_level = intr_disable();
 	thread_unblock (t);
 
 	if(!thread_mlfqs){
@@ -299,10 +319,11 @@ thread_create (const char *name, int priority,
         	thread_yield ();
 	} else {
 		//BSD Scheduler(mlfqs)
-		if(thread_get_priority() < thread_get_bsd_priority(t))
+		if(thread_get_priority() < thread_get_bsd_priority(t)){
 			thread_yield ();
+		}
 	}
-
+	intr_set_level(old_level);
 	return tid;
 }
 
@@ -341,6 +362,7 @@ thread_unblock (struct thread *t) {
 	if(thread_mlfqs){
 		//TODO : Insert into appropriate queue.
 		mlfqs_i_ready_threads++;
+		mlfqs_insert_thread(thread_current());
 	}
 	else {
 		list_insert_ordered (&ready_list, &t->elem, comp_priority, NULL);
@@ -399,7 +421,7 @@ thread_exit (void) {
 
 bool
 comp_wake_ticks (const struct list_elem *a,
-                const struct list_elem *b, void *aux) {
+                const struct list_elem *b, void *aux UNUSED) {
     struct thread *thread_a = list_entry (a, struct thread, elem);
     struct thread *thread_b = list_entry (b, struct thread, elem);
 
@@ -448,7 +470,8 @@ thread_yield (void) {
 		} else {
 			//TODO : mlfqs Case
 			mlfqs_i_ready_threads++;
-			list_push_back (&ready_list, &curr->elem);
+			//list_push_back (&ready_list, &curr->elem);
+			mlfqs_insert_thread(thread_current());
 		}
 	}
 	do_schedule (THREAD_READY);
@@ -516,6 +539,15 @@ thread_set_nice (int nice) {
 	/* TODO: Your implementation goes here */
     struct thread *curr = thread_current();
     curr->mlfqs_i_nice = nice;
+
+    enum intr_level old_level = intr_disable();
+	curr->priority = thread_get_bsd_priority(curr);
+
+	const int ready_max_priority = mlfqs_ready_list_max_priority();
+	if(curr->priority < ready_max_priority){
+		thread_yield();
+	}
+	intr_set_level(old_level);
 }
 
 /* Returns the current thread's nice value. */
@@ -646,7 +678,7 @@ init_thread (struct thread *t, const char *name, int priority) {
 	if(!thread_mlfqs)
 		t->priority = priority;	//Priority
 	else
-		t->priority = PRI_DEFAULT;	//mlfqs
+		t->priority = thread_get_bsd_priority(t);	//mlfqs
 
     t->dpriority = PRI_MIN;
 	t->magic = THREAD_MAGIC;
@@ -662,20 +694,48 @@ init_thread (struct thread *t, const char *name, int priority) {
    idle_thread. */
 static struct thread *
 next_thread_to_run (void) {
-	if (list_empty (&ready_list))
-		return idle_thread;
-	else{
-		if(!thread_mlfqs){
-			//Priority Scheduling
-			return list_entry (list_pop_front (&ready_list), struct thread, elem);
-		} else {
-			//TODO : mlfqs
-			mlfqs_i_ready_threads--;
-			return list_entry (list_pop_front (&ready_list), struct thread, elem);
+	if(!thread_mlfqs){
+		if (list_empty (&ready_list))
+			return idle_thread;
+		else{
+			if(!thread_mlfqs){
+				//Priority Scheduling
+				return list_entry (list_pop_front (&ready_list), struct thread, elem);
+			}
 		}
+	} else {
+		//TODO : mlfqs
+		mlfqs_i_ready_threads--;
+		return mlfqs_next_to_run();
 	}
 }
 
+static struct thread*
+mlfqs_next_to_run(){
+	for(int i=PRI_MAX; i>= PRI_MIN; --i){
+		if(!list_empty(&mlfqs_ready_list[i])){
+			return list_entry (list_pop_front (&mlfqs_ready_list[i]), struct thread, elem);
+		}
+	}
+	ASSERT(false && "mlfqs_next_to_run() : Should not reach");
+	return NULL;
+}
+static int
+mlfqs_ready_list_max_priority (void){
+	struct thread* max_pri_thread = mlfqs_next_to_run();
+    if (max_pri_thread == NULL){
+        return PRI_MIN;
+    } else {
+        return max_pri_thread->priority;
+    }
+}
+
+void mlfqs_insert_thread(struct thread* t){
+	const int priority = thread_get_bsd_priority(t);
+	ASSERT(PRI_MIN <= priority && priority <= PRI_MAX && "PRIORITY OUT OF RANGE");
+
+	list_push_back(&mlfqs_ready_list[priority], &t->elem);
+}
 /* Use iretq to launch the thread */
 void
 do_iret (struct intr_frame *tf) {
@@ -797,6 +857,7 @@ schedule (void) {
 
 	ASSERT (intr_get_level () == INTR_OFF);
 	ASSERT (curr->status != THREAD_RUNNING);
+	ASSERT (next != NULL);
 	ASSERT (is_thread (next));
 	/* Mark us as running. */
 	next->status = THREAD_RUNNING;

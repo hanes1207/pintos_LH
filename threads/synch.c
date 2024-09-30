@@ -74,7 +74,7 @@ sema_down (struct semaphore *sema) {
          //TODO : mlfqs
          // in sema_up, pop "Most significant priority"
          // due to changing priority.
-         list_insert_ordered (&sema->waiters, &thread_current ()->elem, comp_priority, NULL);
+         list_push_back (&sema->waiters, &thread_current ()->elem);
       }
 		thread_block ();
 	}
@@ -239,9 +239,9 @@ lock_acquire (struct lock *lock) {
 
    intr_set_level(old_level);
 	sema_down (&lock->semaphore);
+   lock->holder = thread_current ();
 
    if(!thread_mlfqs){
-      lock->holder = thread_current ();
       list_push_back(&(thread_current()->locks), &(lock->elem));
       ASSERT(lock->elem.prev != NULL);
       ASSERT(lock->elem.next != NULL);
