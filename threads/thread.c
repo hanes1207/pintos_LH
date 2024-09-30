@@ -51,6 +51,11 @@ bool comp_priority (const struct list_elem *a,
 
 // BSD Scheduler helper functions
 static void bsd_recalculate_priorities(void);
+void update_recent_cpu_per_sec_ready_list(void);
+void update_recent_cpu_per_sec (struct thread *t);
+void update_recent_cpu_per_tick (void);
+void update_load_avg (void);
+int  thread_get_bsd_priority(const struct thread *t);
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -475,7 +480,7 @@ thread_get_priority (void) {
 	} else {
 		//TODO : mlfqs
 		// Calculate its priority.
-		return thread_get_bsd_priority(thread_get_current());
+		return thread_get_bsd_priority(thread_current());
 	}
 }
 int
