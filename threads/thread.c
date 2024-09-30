@@ -17,6 +17,15 @@
 #include "userprog/process.h"
 #endif
 
+/* Project 1-3 변수 관리
+ * 1. mlfqs_i_ready_threads 
+ *   - thread_yield()		-> running thread가 ready가 되므로 +1
+ *   - next_thread_to_run() -> ready 중 하나가 running이 되므로 -1
+ *   - thread_unblock()		-> ready thread 추가되므로 +1
+ * 2. mlfqs_fp_load_avg		-> 
+ * 3. mlfqs_max_priority	->
+ */
+
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
@@ -39,6 +48,9 @@ bool comp_wake_ticks (const struct list_elem *a,
 bool comp_priority (const struct list_elem *a,
                             const struct list_elem *b,
                             void *aux UNUSED);
+
+// BSD Scheduler helper functions
+static void bsd_recalculate_priorities(void);
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -134,8 +146,12 @@ thread_init (void) {
 	initial_thread->status = THREAD_RUNNING;
 	initial_thread->tid = allocate_tid ();
 	if(thread_mlfqs){
+		//Initialize root thread's niceness
 		initial_thread->mlfqs_i_nice = 0;
+
+		//Initialize global info.
 		mlfqs_fp_load_avg = 0;
+		mlfqs_i_ready_threads = 1;
 	}
 }
 
@@ -192,10 +208,14 @@ thread_tick (void) {
         update_recent_cpu_per_tick ();
         if ((curr_ticks % TIMER_FREQ) == 0) {
             // load avg 변경
+			update_load_avg();
             // 모든 스레드의 recent cpu 변경
+			update_recent_cpu_per_sec(thread_current());
+			update_recent_cpu_per_sec_ready_list();
         }
         if ((curr_ticks % 4) == 0) {
             // 모든 스레드의 priority 업데이트
+			bsd_recalculate_priorities();
         }
     }
 
@@ -287,6 +307,8 @@ thread_block (void) {
 	ASSERT (!intr_context ());
 	ASSERT (intr_get_level () == INTR_OFF);
 	thread_current ()->status = THREAD_BLOCKED;
+	if(thread_mlfqs)
+		mlfqs_i_ready_threads--;
 	schedule ();
 }
 
@@ -308,6 +330,9 @@ thread_unblock (struct thread *t) {
 	ASSERT (t->status == THREAD_BLOCKED);
     list_insert_ordered (&ready_list, &t->elem, comp_priority, NULL);
 	t->status = THREAD_READY;
+
+	if(thread_mlfqs)
+		mlfqs_i_ready_threads++;
 	intr_set_level (old_level);
 }
 
@@ -408,6 +433,7 @@ thread_yield (void) {
 			list_insert_ordered(&ready_list, &curr->elem, comp_priority, NULL);
 		} else {
 			//TODO : mlfqs Case
+			mlfqs_i_ready_threads++;
 			list_push_back (&ready_list, &curr->elem);
 		}
 	}
@@ -500,6 +526,22 @@ int
 thread_get_recent_cpu (void) {
 	/* TODO: Your implementation goes here */
 	return TO_INTEGER(thread_current()->mlfqs_fp_recent_cpu * 100);
+}
+
+void
+update_recent_cpu_per_sec_ready_list(void){
+	for(int i=0; i<64; ++i){
+		if(!list_empty(&mlfqs_ready_list[i])){
+			for(
+				struct list_elem* cur = list_begin(&mlfqs_ready_list[i]);
+				cur != list_end(&mlfqs_ready_list[i]);
+				cur = list_next(cur)
+			){
+				struct thread* target_thread = list_entry(cur, struct thread, elem);
+				update_recent_cpu_per_sec(target_thread);
+			}
+		}
+	}
 }
 
 void
@@ -614,6 +656,7 @@ next_thread_to_run (void) {
 			return list_entry (list_pop_front (&ready_list), struct thread, elem);
 		} else {
 			//TODO : mlfqs
+			mlfqs_i_ready_threads--;
 			return list_entry (list_pop_front (&ready_list), struct thread, elem);
 		}
 	}
@@ -782,4 +825,49 @@ allocate_tid (void) {
 	lock_release (&tid_lock);
 
 	return tid;
+}
+
+//BSD Scheduler
+static void
+bsd_recalculate_priorities(void) {
+	//TODO : For all 64 ready lists use for loop and recalculate them and reinsert them.
+	struct list temp_list;
+	for(int i=0; i<64; ++i){
+		if(!list_empty(&mlfqs_ready_list[i])){
+			struct list_elem *next = NULL;
+			for(
+				struct list_elem* cur = list_begin(&mlfqs_ready_list[i]);
+				cur != list_end(&mlfqs_ready_list[i]);
+				cur = next
+			){
+				//1. 일단은 꺼낸다.
+				next = list_next(cur);
+				list_remove(cur);
+
+				//2. 일단 temp_list에 집어넣는다.
+				list_push_back(&temp_list, cur);
+
+				//3. Priority를 계산한다.
+				struct thread* target_thread = list_entry(cur, struct thread, elem);
+				target_thread->priority = thread_get_bsd_priority(target_thread);
+			}
+		}
+	}
+
+	struct list_elem* next = NULL;
+	for(
+		struct list_elem* cur = list_begin(&temp_list);
+		cur != list_end(&temp_list);
+		cur = next
+	){
+		//Temp_list에서 하나씩 뽑아서 각자의 priority에 해당하는 queue로 집어넣는다.
+		next = list_next(cur);
+		list_remove(cur);
+
+		struct thread* target_thread = list_entry(cur, struct thread, elem);
+		int target_priority = target_thread->priority;
+		ASSERT(0<= target_priority && target_priority < 64);
+
+		list_push_back(&mlfqs_ready_list[target_priority], cur);
+	}
 }
