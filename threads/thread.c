@@ -77,6 +77,7 @@ int  thread_get_bsd_priority(const struct thread *t);
 
 //Interrupts must be disabled for these mlfqs helper methods.
 static struct thread* mlfqs_next_to_run();
+static int mlfqs_ready_list_count(void);
 static int mlfqs_ready_list_max_priority (void);
 void mlfqs_insert_thread(struct thread* t);
 
@@ -648,10 +649,17 @@ update_recent_cpu_per_tick (void) {
     curr->mlfqs_fp_recent_cpu += TO_FIXED_POINT(1);
 }
 
+static int mlfqs_ready_list_count(void){
+	int count = 0;
+	for(int i=PRI_MAX; i>=PRI_MIN; --i){
+		count += list_size(&mlfqs_ready_list[i]);
+	}
+	return count;
+}
 void
 update_load_avg (void) {
     mlfqs_fp_load_avg *= 59;
-	mlfqs_fp_load_avg += list_size(&mlfqs_ready_list);
+	mlfqs_fp_load_avg += mlfqs_ready_list_count();
     //mlfqs_fp_load_avg += mlfqs_i_ready_threads;
 
     mlfqs_fp_load_avg /= 60;
