@@ -57,6 +57,7 @@ static struct list ready_list;
 //static int mlfqs_max_priority;
 static struct list mlfqs_ready_list[64];
 static struct list sleep_list;  // List of processes in sleeping
+struct list sema_list;
 
 
 bool comp_wake_ticks (const struct list_elem *a,
@@ -532,7 +533,11 @@ thread_get_bsd_priority(const struct thread *t){
 	ASSERT(t != NULL && "Thread pointer should not null");
 	const int recent_cpu_section = TO_INTEGER(t->mlfqs_fp_recent_cpu / 4);
 	int priority = PRI_MAX - recent_cpu_section - (t->mlfqs_i_nice * 2);
-	priority = priority < PRI_MIN ? PRI_MIN : priority;
+
+	if(priority < PRI_MIN)
+		return PRI_MIN;
+	else if(priority > PRI_MAX)
+		return PRI_MAX;
 	return priority;
 }
 
@@ -638,9 +643,12 @@ update_recent_cpu_per_sec (struct thread *t) {
     int denominator = 2 * mlfqs_fp_load_avg + TO_FIXED_POINT(1);
     int weight = FIXED_DIV(numerator, denominator);
     int past_weighted = FIXED_MULT(weight, t->mlfqs_fp_recent_cpu);
-
+	t->mlfqs_fp_recent_cpu = past_weighted;
     t->mlfqs_fp_recent_cpu += TO_FIXED_POINT(thread_get_nice());
-	//printf("UPDATE_RECENT_CPU_PER_SEC[%s]=[%d]\n", t->name, TO_INTEGER(t->mlfqs_fp_recent_cpu * 100));
+	
+	const int recent_cpu_ipart = TO_INTEGER(t->mlfqs_fp_recent_cpu);
+	const int recent_cpu_fpart = TO_INTEGER(t->mlfqs_fp_recent_cpu * 100) % 100;
+	//printf("UPDATE_RECENT_CPU_PER_SEC[%s]=[%d.%d]\n", t->name, recent_cpu_ipart, recent_cpu_fpart);
 }
 
 void
@@ -654,16 +662,21 @@ static int mlfqs_ready_list_count(void){
 	for(int i=PRI_MAX; i>=PRI_MIN; --i){
 		count += list_size(&mlfqs_ready_list[i]);
 	}
-	return count;
+	
+	if(thread_current() == idle_thread)
+		return count;
+	else
+		return count+1;
 }
 void
 update_load_avg (void) {
     mlfqs_fp_load_avg *= 59;
-	mlfqs_fp_load_avg += mlfqs_ready_list_count();
-    //mlfqs_fp_load_avg += mlfqs_i_ready_threads;
+	mlfqs_fp_load_avg += TO_FIXED_POINT(mlfqs_ready_list_count());
 
     mlfqs_fp_load_avg /= 60;
-    // printf("%d", mlfqs_fp_load_avg);
+	const int ipart_load_avg = TO_INTEGER(mlfqs_fp_load_avg);
+	const int fpart_load_avg = TO_INTEGER(mlfqs_fp_load_avg * 100) % 100;
+    //printf("UPDATE_LOAD_AVG = %d.%d\n", ipart_load_avg, fpart_load_avg);
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -1010,7 +1023,7 @@ bsd_recalculate_priorities(void) {
 
 }
 void thread_print_ready_queue(){
-	puts("Thread Queue Print");
+	//puts("Thread Queue Print");
 	for(int i=PRI_MIN; i<=PRI_MAX; ++i){
 		int cnt = 0;
 		for(
@@ -1019,7 +1032,7 @@ void thread_print_ready_queue(){
 			cur = list_next(cur)
 		){
 			struct thread* target = list_entry(cur, struct thread, elem);
-			printf("QUEUE[%d][%d] - [%s]\n", i, cnt, target->name);
+			//printf("QUEUE[%d][%d] - [%s]\n", i, cnt, target->name);
 			cnt++;
 		}
 	}
