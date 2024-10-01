@@ -659,7 +659,7 @@ update_recent_cpu_per_sec (struct thread *t) {
     int weight = FIXED_DIV(numerator, denominator);
     int past_weighted = FIXED_MULT(weight, t->mlfqs_fp_recent_cpu);
 	t->mlfqs_fp_recent_cpu = past_weighted;
-    t->mlfqs_fp_recent_cpu += TO_FIXED_POINT(thread_get_nice());
+    t->mlfqs_fp_recent_cpu += TO_FIXED_POINT(t->mlfqs_i_nice);
 	
 	// const int recent_cpu_ipart = TO_INTEGER(t->mlfqs_fp_recent_cpu);
 	// const int recent_cpu_fpart = TO_INTEGER(t->mlfqs_fp_recent_cpu * 100) % 100;
