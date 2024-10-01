@@ -57,7 +57,7 @@ static struct list ready_list;
 //static int mlfqs_max_priority;
 static struct list mlfqs_ready_list[64];
 static struct list sleep_list;  // List of processes in sleeping
-struct list sema_list;
+struct list sema_waiters_list;
 
 
 bool comp_wake_ticks (const struct list_elem *a,
@@ -77,7 +77,7 @@ void update_load_avg (void);
 int  thread_get_bsd_priority(const struct thread *t);
 
 //Interrupts must be disabled for these mlfqs helper methods.
-static struct thread* mlfqs_next_to_run();
+static struct thread* mlfqs_next_to_run(void); // void 넣어도 되겠지..?
 static int mlfqs_ready_list_count(void);
 static int mlfqs_ready_list_max_priority (void);
 void mlfqs_insert_thread(struct thread* t);
@@ -163,7 +163,7 @@ thread_init (void) {
 	lgdt (&gdt_ds);
 
 	/* Init the globla thread context */
-	list_init (&sema_list);
+	list_init (&sema_waiters_list);
 	lock_init (&tid_lock);
 	list_init (&ready_list);
 	for(int i=PRI_MIN; i<=PRI_MAX; i++){
@@ -208,12 +208,11 @@ thread_start (void) {
 void
 thread_tick (void) {
 	struct thread *t = thread_current ();
-    struct list_elem *e = list_begin (&sleep_list);
-    struct thread *tmp;
     int64_t curr_ticks = timer_ticks ();
 
-	if(thread_mlfqs)
+	if(thread_mlfqs) {
 		ASSERT(list_empty(&ready_list));
+    }
 
 	/* Update statistics. */
 	if (t == idle_thread)
@@ -225,10 +224,10 @@ thread_tick (void) {
 	else
 		kernel_ticks++;
     for (
-        e = list_begin(&sleep_list);
+        struct list_elem *e = list_begin (&sleep_list);
         e != list_end(&sleep_list);
     ) {
-        tmp = list_entry (e, struct thread, elem);
+        struct thread* tmp = list_entry (e, struct thread, elem);
 
         if (tmp->wake_ticks <= curr_ticks) {
             ASSERT(tmp->status == THREAD_BLOCKED);
@@ -236,26 +235,38 @@ thread_tick (void) {
             e = list_begin(&sleep_list);
             thread_unblock (tmp);
         }
-        else break;
+		else break;
+        //else e = list_next(e);
     }
 
     if (thread_mlfqs) {
 		enum intr_level old_level = intr_disable();
         update_recent_cpu_per_tick ();
-        if ((curr_ticks % TIMER_FREQ) == 0) {
+		const bool isSecond = (curr_ticks % TIMER_FREQ) == 0;
+		const bool needRecalculate = (curr_ticks % 4) == 0;
+
+        if (isSecond) {
             // load avg 변경
 			update_load_avg();
             // 모든 스레드의 recent cpu 변경
 			update_recent_cpu_per_sec(thread_current());
 			update_recent_cpu_per_sec_ready_list();
 			update_recent_cpu_per_sec_blocked();
-
-			thread_print_ready_queue();
         }
-        if ((curr_ticks % 4) == 0) {
+        if (needRecalculate) {
             // 모든 스레드의 priority 업데이트
 			bsd_recalculate_priorities();
         }
+		/*if(isSecond){
+			printf("Now - [%s] with priority(%d) - recent_cpu(%d) - calc_priority (%d)\n", 
+				thread_current()->name,
+				thread_get_priority(),
+				thread_get_recent_cpu(),
+				thread_get_bsd_priority(thread_current())
+			);
+			thread_print_ready_queue();
+			thread_print_block_queue();
+		}*/
 		intr_set_level(old_level);
     }
 
@@ -350,8 +361,6 @@ thread_block (void) {
 	ASSERT (!intr_context ());
 	ASSERT (intr_get_level () == INTR_OFF);
 	thread_current ()->status = THREAD_BLOCKED;
-	/*if(thread_mlfqs)
-		mlfqs_i_ready_threads--;*/
 	schedule ();
 }
 
@@ -373,7 +382,6 @@ thread_unblock (struct thread *t) {
 	ASSERT (t->status == THREAD_BLOCKED);
 	if(thread_mlfqs){
 		//TODO : Insert into appropriate queue.
-		//mlfqs_i_ready_threads++;
 		mlfqs_insert_thread(t);
 	}
 	else {
@@ -481,9 +489,15 @@ thread_yield (void) {
 			list_insert_ordered(&ready_list, &curr->elem, comp_priority, NULL);
 		} else {
 			//TODO : mlfqs Case
-			//mlfqs_i_ready_threads++;
 			//list_push_back (&ready_list, &curr->elem);
-			//printf("mlfqs_insert_thread called by thread_yield()\n");
+			/*const int next_queue_num = mlfqs_ready_list_max_priority();
+			if(next_queue_num){
+				printf("mlfqs_insert_thread called by thread_yield(), target_queue = %d\n", thread_current()->priority);
+				printf("next thread will be popped from %d queue.\n", next_queue_num);
+				thread_print_ready_queue();
+				thread_print_block_queue();
+			}*/
+
 			mlfqs_insert_thread(thread_current());
 		}
 	}
@@ -525,14 +539,17 @@ thread_get_priority (void) {
 	} else {
 		//TODO : mlfqs
 		// Calculate its priority.
-		return thread_get_bsd_priority(thread_current());
+		return thread_current()->priority;
+		//return thread_get_bsd_priority(thread_current());
 	}
 }
 int
 thread_get_bsd_priority(const struct thread *t){
 	ASSERT(t != NULL && "Thread pointer should not null");
-	const int recent_cpu_section = TO_INTEGER(t->mlfqs_fp_recent_cpu / 4);
-	int priority = PRI_MAX - recent_cpu_section - (t->mlfqs_i_nice * 2);
+	
+	const int recent_cpu_section = (t->mlfqs_fp_recent_cpu / 4);
+	const int priority_fp = TO_FIXED_POINT(PRI_MAX) - recent_cpu_section - TO_FIXED_POINT(t->mlfqs_i_nice * 2);
+	const int priority = TO_INTEGER(priority_fp);
 
 	if(priority < PRI_MIN)
 		return PRI_MIN;
@@ -556,6 +573,7 @@ thread_get_arbitrary_priority (const struct thread *t) {
 void
 thread_set_nice (int nice) {
 	/* TODO: Your implementation goes here */
+	ASSERT(nice >= NICE_MIN && nice <= NICE_MAX);
     struct thread *curr = thread_current();
     curr->mlfqs_i_nice = nice;
 
@@ -582,7 +600,7 @@ thread_get_nice (void) {
 int
 thread_get_load_avg (void) {
 	/* TODO: Your implementation goes here */
-
+    
 	return TO_INTEGER(mlfqs_fp_load_avg * 100);
 }
 
@@ -604,22 +622,19 @@ update_recent_cpu_per_sec_blocked(void){
 		update_recent_cpu_per_sec(target_thread);
 	}
 	//2. Update semaphore waiters
-	/*for(
-		struct list_elem * cur = list_begin(&sema_list);
-		cur != list_end(&sema_list);
+	//sema_list has innate fault in its design. How to deal with semaphore in stack?
+	//printf("Semaphore list size : %d\n", list_size(&sema_list));
+	for(
+		struct list_elem * cur = list_begin(&sema_waiters_list);
+		cur != list_end(&sema_waiters_list);
 		cur = list_next(cur)
 	){
-		struct semaphore* sema = list_entry(cur, struct semaphore, elem);
-		for(
-			struct list_elem * wcur = list_begin(&sema->waiters);
-			wcur != list_end(&sema->waiters);
-			wcur = list_next(wcur)
-		){
-			struct thread* target_thread = list_entry(wcur, struct thread, elem);
-			printf("update_recent_cpu_per_sec - updating[%s]\n", target_thread->name);
-			update_recent_cpu_per_sec(target_thread);
-		}
-	}*/
+		struct thread* target_thread = list_entry(cur, struct thread, mlfqs_elem);
+		ASSERT(is_thread(target_thread));
+
+		//printf("update_recent_cpu_per_sec(sema) - updating[%s](%d)\n", target_thread->name, target_thread->tid);
+		update_recent_cpu_per_sec(target_thread);
+	}
 }
 void
 update_recent_cpu_per_sec_ready_list(void){
@@ -646,8 +661,8 @@ update_recent_cpu_per_sec (struct thread *t) {
 	t->mlfqs_fp_recent_cpu = past_weighted;
     t->mlfqs_fp_recent_cpu += TO_FIXED_POINT(thread_get_nice());
 	
-	const int recent_cpu_ipart = TO_INTEGER(t->mlfqs_fp_recent_cpu);
-	const int recent_cpu_fpart = TO_INTEGER(t->mlfqs_fp_recent_cpu * 100) % 100;
+	// const int recent_cpu_ipart = TO_INTEGER(t->mlfqs_fp_recent_cpu);
+	// const int recent_cpu_fpart = TO_INTEGER(t->mlfqs_fp_recent_cpu * 100) % 100;
 	//printf("UPDATE_RECENT_CPU_PER_SEC[%s]=[%d.%d]\n", t->name, recent_cpu_ipart, recent_cpu_fpart);
 }
 
@@ -670,10 +685,15 @@ static int mlfqs_ready_list_count(void){
 }
 void
 update_load_avg (void) {
-    mlfqs_fp_load_avg *= 59;
+    /*mlfqs_fp_load_avg *= 59;
 	mlfqs_fp_load_avg += TO_FIXED_POINT(mlfqs_ready_list_count());
 
-    mlfqs_fp_load_avg /= 60;
+    mlfqs_fp_load_avg /= 60;*/
+
+	int64_t temp = mlfqs_fp_load_avg;	//To calculate in 64bit...
+	temp = (temp *  59 + (int64_t)TO_FIXED_POINT(mlfqs_ready_list_count())) / 60;
+	mlfqs_fp_load_avg = temp;
+
 	const int ipart_load_avg = TO_INTEGER(mlfqs_fp_load_avg);
 	const int fpart_load_avg = TO_INTEGER(mlfqs_fp_load_avg * 100) % 100;
     //printf("UPDATE_LOAD_AVG = %d.%d\n", ipart_load_avg, fpart_load_avg);
@@ -773,6 +793,7 @@ next_thread_to_run (void) {
 		//mlfqs_i_ready_threads--;
 		return mlfqs_next_to_run();
 	}
+    NOT_REACHED ();
 }
 
 int mlfqs_next_to_run_cnt = 0;
@@ -794,12 +815,13 @@ mlfqs_ready_list_max_priority (void){
 		}
 	}
 	return PRI_MIN;
-	struct thread* max_pri_thread = mlfqs_next_to_run();
+	// struct thread* max_pri_thread = mlfqs_next_to_run(); // 의미 없음
 }
 
 void mlfqs_insert_thread(struct thread* t){
 	const int priority = thread_get_bsd_priority(t);
 	ASSERT(PRI_MIN <= priority && priority <= PRI_MAX && "PRIORITY OUT OF RANGE");
+	ASSERT(is_thread(t));
 	//printf("MLFQS : Insert thread[%s] In Priority=%d\n", t->name, priority);
 	list_push_back(&mlfqs_ready_list[priority], &t->elem);
 }
@@ -972,7 +994,9 @@ allocate_tid (void) {
 //BSD Scheduler
 static void
 bsd_recalculate_priorities(void) {
-	//printf("bsd_recalculate start\n");
+	//0. RECALCULATE FOR NOW THREAD (I FORGOT THIS IN DESIGN, FUXX)
+	thread_current()->priority = thread_get_bsd_priority(thread_current());
+	//1. Recalculate for READY THREADS
 	//TODO : For all 64 ready lists use for loop and recalculate them and reinsert them.
 	struct list temp_list;
 	list_init(&temp_list);
@@ -1019,8 +1043,27 @@ bsd_recalculate_priorities(void) {
 			list_push_back(&mlfqs_ready_list[target_priority], cur);
 		}
 	}
+	//2. Recalculate for BLOCKED THREADS
+	//2-1. Recalculate for timer-waiting threads
+	for(
+		struct list_elem* cur = list_begin(&sleep_list);
+		cur != list_end(&sleep_list);
+		cur = list_next(cur)
+	){
+		struct thread* target_thread = list_entry(cur, struct thread, elem);
+		target_thread->priority = thread_get_bsd_priority(target_thread);
+	}
+	//list_sort(&sleep_list, comp_priority, NULL);
 
-
+	//2-2. Recalculate for semaphore-waiting threads
+	for(
+		struct list_elem* cur = list_begin(&sema_waiters_list);
+		cur != list_end(&sema_waiters_list);
+		cur = list_next(cur)
+	){
+		struct thread* target_thread = list_entry(cur, struct thread, mlfqs_elem);
+		target_thread->priority = thread_get_bsd_priority(target_thread);
+	}
 }
 void thread_print_ready_queue(){
 	//puts("Thread Queue Print");
@@ -1032,8 +1075,33 @@ void thread_print_ready_queue(){
 			cur = list_next(cur)
 		){
 			struct thread* target = list_entry(cur, struct thread, elem);
-			//printf("QUEUE[%d][%d] - [%s]\n", i, cnt, target->name);
+			printf("QUEUE[%d] - [%s][%d] - recent_cpu(%d)\n", i, target->name, cnt, TO_INTEGER(target->mlfqs_fp_recent_cpu * 100));
 			cnt++;
 		}
+	}
+}
+
+void thread_print_block_queue(){
+	for(
+		struct list_elem *cur = list_begin(&sleep_list);
+		cur != list_end(&sleep_list);
+		cur = list_next(cur)
+	){
+		struct thread* target = list_entry(cur, struct thread, elem);
+		printf("BLOCK(TIMER) - [%s] with priority(%d) - recent_cpu(%d) - wake_tick(%lld) - now_tick(%lld)\n"
+		, target->name
+		, target->priority
+		, TO_INTEGER(target->mlfqs_fp_recent_cpu * 100)
+		, target->wake_ticks
+		, timer_ticks()
+		);
+	}
+	for(
+		struct list_elem* cur = list_begin(&sema_waiters_list);
+		cur != list_end(&sema_waiters_list);
+		cur = list_next(cur)
+	){
+		struct thread* target = list_entry(cur, struct thread, mlfqs_elem);
+		printf("BLOCK(SEMA) - [%s] with priority(%d) - recent_cpu(%d)\n", target->name, target->priority, TO_INTEGER(target->mlfqs_fp_recent_cpu * 100));
 	}
 }

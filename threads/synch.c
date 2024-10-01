@@ -33,6 +33,11 @@
 #include "threads/thread.h"
 
 #define PRIORITY_DONATION_DEPTH_LIMIT 64
+
+static int sema_count = 0;
+void sema_count_print(void){
+   printf("sema_count = %d\n", sema_count);
+}
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -49,9 +54,7 @@ sema_init (struct semaphore *sema, unsigned value) {
    enum intr_level old_level = intr_disable();
 	sema->value = value;
 	list_init (&sema->waiters);
-   if(thread_mlfqs){
-      list_push_back(&sema_list, &sema->elem);
-   }
+   sema_count++;
    intr_set_level(old_level);
 }
 
@@ -80,6 +83,7 @@ sema_down (struct semaphore *sema) {
          // in sema_up, pop "Most significant priority"
          // due to changing priority.
          list_push_back (&sema->waiters, &thread_current ()->elem);
+         list_push_back (&sema_waiters_list, &thread_current()->mlfqs_elem);
       }
 		thread_block ();
 	}
@@ -136,11 +140,34 @@ sema_up (struct semaphore *sema) {
             intr_set_level (old_level);
             return;
          }
-      } else {
-         //TODO : mlfqs case
-         struct thread* to_wake_thread = list_entry (list_pop_front (&sema->waiters),
-					                                 struct thread, elem);
+      } else if(!list_empty(&sema->waiters)){
+         //TODO : mlfqs, list not empty case
+         struct list_elem* max_prior_cur = list_begin(&sema->waiters);
+         for(
+            struct list_elem* cur = list_begin(&sema->waiters);
+            cur != list_end(&sema->waiters);
+            cur = list_next(cur)
+         ){
+            if(
+               list_entry(max_prior_cur, struct thread, elem)->priority 
+               < list_entry(cur, struct thread, elem)->priority
+            ){
+               max_prior_cur = cur;
+            }
+         }
+         struct thread* to_wake_thread = list_entry(max_prior_cur, struct thread, elem);
+         list_remove(max_prior_cur);
+         list_remove(&to_wake_thread->mlfqs_elem);
+
+         /*struct thread* to_wake_thread = list_entry (list_pop_front (&sema->waiters),
+					                                 struct thread, elem);*/
 		   thread_unblock (to_wake_thread);
+         if(to_wake_thread->priority > thread_current()->priority){
+            sema->value++;    //Same mistake as priority scheduler, I forgot to add this...
+            thread_yield();
+            intr_set_level (old_level);
+            return;
+         }
       }
    }
 	sema->value++;

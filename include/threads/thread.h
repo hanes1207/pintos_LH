@@ -28,6 +28,10 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+// Thread Niceness(mlfqs)
+#define NICE_MIN -20
+#define NICE_MAX 20
+#define NICE_DEFAULT 0
 /* A kernel thread or user process.
  *
  * Each thread structure is stored in its own 4 kB page.  The
@@ -111,6 +115,7 @@ struct thread {
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
+	struct list_elem mlfqs_elem;		//For sema_waiters_list
     struct list locks;                  /*  Holding locks
 											For Priority donation return(If 2 locks made donation, 
                                             then 1 lock released, other lock's donation info must be present. */
@@ -134,11 +139,12 @@ struct thread {
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
-extern struct list sema_list;	// List of semaphores
+extern struct list sema_waiters_list;	// List of semaphores
 
 void thread_init (void);
 void thread_start (void);
 void thread_print_ready_queue(void);
+void thread_print_block_queue();
 
 void thread_tick (void);
 void thread_print_stats (void);
