@@ -416,8 +416,55 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
+	/*
+	//What is input? -> file_name is command(...)
+	//Use if_'s rsp to manipulate stack
 
-	success = true;
+	//Copy whole command into user program's stack, and then tokenize
+	const int cmd_len = strlen(file_name);
+	const int cmd_size = cmd_len + 1;
+	const int alignment = (8 - (cmd_size & 0b111)) & 0b111;
+
+	//Manipulate RSP for copying string
+	if_->rsp -= cmd_size;
+	char* cmd_copy = (void*)(if_->rsp);
+	memcpy(cmd_copy, file_name, cmd_size);
+
+	//Manipulate RSP for alignment
+	if_->rsp -= alignment;
+
+	int argc = 0;
+	char** cur = NULL;
+	for(
+		char* ret_ptr = strtok_r(cmd_copy, " ", cur);
+		ret_ptr;
+		ret_ptr = strtok_r(NULL, " ", cur)
+	){
+		if_->rsp -= sizeof(void*);
+		*((char**)if_->rsp) = ret_ptr;
+
+		argc++;
+	}
+	//Trailing NULL pointer
+	if_->rsp -= sizeof(void*);
+	*((char**)if_->rsp) = NULL;
+
+	//Reverse order : 
+	//	From now on, stack has 	(Top) {0, 1, 2, 3, 4} (Bottom)
+	//	It should be : 			(Top) {4, 3, 2, 1, 0} (Bottom)
+	for(int i=0; i < argc / 2; ++i){
+		char* temp_ptrval = *((char**)if_->rsp - i);
+		*((char**)if_->rsp - i) = *((char**)if_->rsp - argc + i);
+		*((char**)if_->rsp - argc + i)= temp_ptrval;
+	}
+	
+	if_->rsp -= sizeof(void*);
+	*((void**)if_->rsp) = NULL;
+
+	if_->R.rdi = argc;	//argc(int)
+	if_->R.rsi = (uint64_t)(if_->rsp + 8);	//argv(char*[])
+	
+	success = true;*/
 
 done:
 	/* We arrive here whether the load is successful or not. */

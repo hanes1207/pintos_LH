@@ -136,7 +136,12 @@ sema_up (struct semaphore *sema) {
          // if waiting thread's priority is higher, than yield current thread
          if (thread_get_priority () < thread_get_arbitrary_priority(to_wake_thread)){
             sema->value++;
-            thread_yield();
+            if(!intr_context())
+               //Normal case(for project 1)
+               thread_yield();
+            else
+               //Added for userprogram, interrupt context case should be considered.
+               intr_yield_on_return(); 
             intr_set_level (old_level);
             return;
          }
@@ -164,7 +169,12 @@ sema_up (struct semaphore *sema) {
 		   thread_unblock (to_wake_thread);
          if(to_wake_thread->priority > thread_current()->priority){
             sema->value++;    //Same mistake as priority scheduler, I forgot to add this...
-            thread_yield();
+            if(!intr_context())
+               //Normal case(for project 1)
+               thread_yield();
+            else
+               //Added for userprogram, interrupt context case should be considered.
+               intr_yield_on_return(); 
             intr_set_level (old_level);
             return;
          }
