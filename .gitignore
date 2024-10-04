@@ -1,2 +1,4 @@
 .vscode/
 threads/build/
+ljh_sh/
+*/build*
