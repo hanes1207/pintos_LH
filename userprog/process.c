@@ -416,7 +416,7 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
-	/*
+	
 	//What is input? -> file_name is command(...)
 	//Use if_'s rsp to manipulate stack
 
@@ -464,7 +464,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	if_->R.rdi = argc;	//argc(int)
 	if_->R.rsi = (uint64_t)(if_->rsp + 8);	//argv(char*[])
 	
-	success = true;*/
+	success = true;
 
 done:
 	/* We arrive here whether the load is successful or not. */
