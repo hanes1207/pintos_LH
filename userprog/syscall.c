@@ -1,12 +1,16 @@
 #include "userprog/syscall.h"
+#include "userprog/process.h"
 #include <stdio.h>
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
+#include "threads/vaddr.h"
 #include "threads/thread.h"
 #include "threads/loader.h"
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
+
+#include "threads/init.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -37,10 +41,123 @@ syscall_init (void) {
 			FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 }
 
+bool
+syscall_memcheck(void* target_ptr, size_t length){
+	uint64_t target_ptr_val = (uint64_t)target_ptr;
+	if(target_ptr_val >= KERN_BASE || target_ptr_val + length >= KERN_BASE){
+		return false;
+	}
+	//Else, check userspace page table entries.
+
+}
+int syscall_read(){
+
+}
+int syscall_write(int fd, const void* buffer, unsigned size){
+	//1. Check user memory(buffer and size)
+
+	//2. Do actions.
+	if(fd == 0){
+		return 0;
+	}
+	else if(fd == 1){
+		//Write into console.
+		putbuf(buffer, size);
+	}
+	else{
+		//File operations
+
+	}
+}
 /* The main system call interface */
 void
-syscall_handler (struct intr_frame *f UNUSED) {
+syscall_handler (struct intr_frame *f) {
 	// TODO: Your implementation goes here.
-	printf ("system call!\n");
-	thread_exit ();
+	const int64_t syscall_num = f->R.rax;
+	uint64_t syscall_args[6] = {0,};
+	syscall_args[0] = f->R.rdi;
+	syscall_args[1] = f->R.rsi;
+	syscall_args[2] = f->R.rdx;
+	syscall_args[3] = f->R.r10;
+	syscall_args[4] = f->R.r8;
+	syscall_args[5] = f->R.r9;
+
+	switch(syscall_num){
+		//Project 2
+		case SYS_HALT:
+			power_off();
+			NOT_REACHED();
+			break;
+
+		case SYS_EXIT:
+			{
+				const int status = syscall_args[0];
+            	thread_current()->exit_code = status;
+				thread_exit(); //Free all res. however, child status block should remain.
+			}
+			break;
+		
+		case SYS_FORK:
+			f->R.rax = 0;
+			const tid_t child_tid = process_fork((const char*)(syscall_args[0]), f);
+			//Return value differs. (parent vs child)
+			if(child_tid != thread_current()->tid)
+				f->R.rax = child_tid;
+			break;
+		
+		case SYS_EXEC:
+			process_exec((const char*)(syscall_args[0]));
+			NOT_REACHED();
+			break;
+		
+		case SYS_WAIT:
+			f->R.rax = process_wait(syscall_args[0]);
+			break;
+		
+		case SYS_CREATE:
+
+			break;
+		
+		case SYS_REMOVE:
+
+			break;
+		
+		case SYS_OPEN:
+
+			break;
+		
+		case SYS_FILESIZE:
+
+			break;
+		
+		case SYS_READ:
+
+			break;
+		
+		case SYS_WRITE:
+			f->R.rax = syscall_write(syscall_args[0], (const void*)syscall_args[1], syscall_args[2]);
+			break;
+		
+		case SYS_SEEK:
+
+			break;
+		case SYS_TELL:
+
+			break;
+		
+		case SYS_CLOSE:
+
+			break;
+		//Project 3, 4
+		default:
+			//Invalid system calls.
+			break;
+	}
+	//printf ("system call!\n");
+	//thread_exit ();
+}
+
+void
+sys_exit_handler (int status) {
+    
 }

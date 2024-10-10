@@ -27,6 +27,11 @@ static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
 
+struct fork_aux{
+	struct thread* parent;			//Context-switching saved context
+	struct intr_frame* parent_if;	//Definitely User-space context(from system call)
+};
+
 /* General process initializer for initd and other process. */
 static void
 process_init (void) {
@@ -74,10 +79,11 @@ initd (void *f_name) {
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
 tid_t
-process_fork (const char *name, struct intr_frame *if_ UNUSED) {
+process_fork (const char *name, struct intr_frame *if_) {
 	/* Clone current thread to new thread.*/
+	struct fork_aux aux = {thread_current (), if_};
 	return thread_create (name,
-			PRI_DEFAULT, __do_fork, thread_current ());
+			PRI_DEFAULT, __do_fork, &aux);
 }
 
 #ifndef VM
@@ -119,10 +125,10 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 static void
 __do_fork (void *aux) {
 	struct intr_frame if_;
-	struct thread *parent = (struct thread *) aux;
+	struct thread *parent = ((struct fork_aux*)aux)->parent;
 	struct thread *current = thread_current ();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame *parent_if;
+	struct intr_frame *parent_if = ((struct fork_aux*)aux)->parent_if;
 	bool succ = true;
 
 	/* 1. Read the cpu context to local stack. */
@@ -148,6 +154,7 @@ __do_fork (void *aux) {
 	 * TODO:       in include/filesys/file.h. Note that parent should not return
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
+	
 
 	process_init ();
 
@@ -200,10 +207,30 @@ process_exec (void *f_name) {
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) {
+process_wait (tid_t child_tid) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	struct thread* curr = thread_current();
+	lock_acquire(&curr->child_procs_lock);
+	for(
+		struct list_elem* cursor = list_begin(&curr->child_procs);
+		cursor != list_end(&curr->child_procs);
+		cursor = list_next(cursor)
+	){
+		struct thread* target = list_entry(cursor, struct thread, proc_elem);
+		if(target->tid == child_tid){
+			lock_release(&curr->child_procs_lock);
+			sema_down(&target->wait_hang_sema);
+			const int exit_code = target->exit_code;
+			sema_up(&target->res_free_sema);
+
+			//Removing from list is done by child itself.
+			return exit_code;
+		}
+	}
+	//Default is -1.
+	lock_release(&curr->child_procs_lock);
 	return -1;
 }
 
@@ -216,6 +243,30 @@ process_exit (void) {
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
+	//Allow all child's resource free before die
+	lock_acquire(&curr->child_procs_lock);
+	for(
+		struct list_elem* it=list_begin(&curr->child_procs);
+		it != list_end(&curr->child_procs);
+		it = list_next(it)
+	){
+		struct thread* child = list_entry(it, struct thread, proc_elem);
+		child->parent = NULL;
+		sema_up(&child->res_free_sema);
+	}
+	lock_release(&curr->child_procs_lock);
+
+	//Allow parent's wait ends
+	sema_up(&curr->wait_hang_sema);
+
+	//After getting resource_free_semaphore(allow for exit from parent, means wait called.)
+	sema_down(&curr->res_free_sema);
+	
+	if(curr->parent != NULL){
+		lock_acquire(&curr->parent->child_procs_lock); // prevent sibbiling from accessing parent
+		list_remove(&curr->proc_elem); //Critical section
+		lock_release(&curr->parent->child_procs_lock);
+	}
 	process_cleanup ();
 }
 
@@ -335,13 +386,32 @@ load (const char *file_name, struct intr_frame *if_) {
 		goto done;
 	process_activate (thread_current ());
 
+	//결국엔 malloc을 한 번은 써 주어야만 했다..... 
+	//이럴 거면 애초에 아래에서 strtok로 뒤집는 저 X랄을 할 필요가...
+	const int cmdlen = strlen(file_name);
+	int end_pos = 0;
+	for(int i=0; i<cmdlen; ++i){
+		if(file_name[i] == ' ' || file_name[i] == '\t' || file_name[i] == '\n'){
+			//printf("%d -> [%c]\n", i, file_name[i]);
+			end_pos = i;
+			break;
+		}
+	}
+	if(end_pos == 0)
+		end_pos = cmdlen;
+	
+	char* exec_file_name = malloc(end_pos + 1);
+	memcpy(exec_file_name, file_name, end_pos);
+	exec_file_name[end_pos] = '\0';
+
 	/* Open executable file. */
-	file = filesys_open (file_name);
+	file = filesys_open (exec_file_name);
 	if (file == NULL) {
-		printf ("load: %s: open failed\n", file_name);
+		printf ("load: %s: open failed\n", exec_file_name);
+		free(exec_file_name);
 		goto done;
 	}
-
+	free(exec_file_name);
 	/* Read and verify executable header. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
 			|| memcmp (ehdr.e_ident, "\177ELF\2\1\1", 7)
@@ -417,6 +487,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
 	
+	//# ---- Process arguments(1) ---- #
 	//What is input? -> file_name is command(...)
 	//Use if_'s rsp to manipulate stack
 
@@ -434,30 +505,36 @@ load (const char *file_name, struct intr_frame *if_) {
 	if_->rsp -= alignment;
 
 	int argc = 0;
-	char** cur = NULL;
+	char* cur = NULL;
 	for(
-		char* ret_ptr = strtok_r(cmd_copy, " ", cur);
+		char* ret_ptr = strtok_r(cmd_copy, " ", &cur);
 		ret_ptr;
-		ret_ptr = strtok_r(NULL, " ", cur)
+		ret_ptr = strtok_r(NULL, " ", &cur)
 	){
 		if_->rsp -= sizeof(void*);
 		*((char**)if_->rsp) = ret_ptr;
 
 		argc++;
 	}
-	//Trailing NULL pointer
+	//printf("load() : argc = %d\n",argc);
 	if_->rsp -= sizeof(void*);
 	*((char**)if_->rsp) = NULL;
+	//# ---- Process arguments(1) End ---- #
+	//Still, argv[i] needs to be reversed.
 
+
+	char** argv_start = (char**)if_->rsp;
 	//Reverse order : 
 	//	From now on, stack has 	(Top) {0, 1, 2, 3, 4} (Bottom)
 	//	It should be : 			(Top) {4, 3, 2, 1, 0} (Bottom)
-	for(int i=0; i < argc / 2; ++i){
-		char* temp_ptrval = *((char**)if_->rsp - i);
-		*((char**)if_->rsp - i) = *((char**)if_->rsp - argc + i);
-		*((char**)if_->rsp - argc + i)= temp_ptrval;
-	}
 	
+	for(int i=0; i <= argc / 2; ++i){
+		//printf("Swap [%d] : [%s](%d) & [%s](%d)\n", i, *(argv_start + i), i, *(argv_start + argc - i), argc - i);
+		char* temp_ptrval = *(argv_start + i);
+		*(argv_start + i) = *(argv_start + argc - i);
+		*(argv_start + argc - i) = temp_ptrval;
+	}
+	//Return Addr(NULL)
 	if_->rsp -= sizeof(void*);
 	*((void**)if_->rsp) = NULL;
 

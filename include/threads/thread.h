@@ -5,6 +5,10 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+
+#ifdef USERPROG
+#include "threads/synch.h"
+#endif
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -32,6 +36,29 @@ typedef int tid_t;
 #define NICE_MIN -20
 #define NICE_MAX 20
 #define NICE_DEFAULT 0
+
+
+struct CSB{
+	//Child Status Block
+	tid_t tid;
+	int exit_status;
+	struct semaphore wait_hang_sema;
+	struct list_elem elem;
+	struct thread* thread_ptr;
+};
+/* thread_create_child_status_block()
+ * -> Create child_status_block(via malloc())
+ * -> Add child_status_block in parent's csb_list
+ * -> Set child thread's csb_pointer to CSB.
+ * 
+ * Note. If parent process dies first, then it should set all child's csb_pointer to NULL
+ * Note. If child process exited, then it set its csb's thread pointer to NULL
+ * Note. NULL pointer means do nothing for that.(Orphan process, )
+ */
+void thread_create_child_status_block(struct thread* parent, struct thread* child);
+void thread_free_csb_list(struct thread* target);	//Sweep csb_list, mark those thread's csb_pointer to NULL, free all the items in list.
+void thread_detach_csb(struct thread* target);		//Go to csb, mark its thread_ptr to NULL
+
 /* A kernel thread or user process.
  *
  * Each thread structure is stored in its own 4 kB page.  The
@@ -124,6 +151,15 @@ struct thread {
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
+	
+	struct thread* parent;
+	struct lock child_procs_lock;
+	struct list child_procs;					// Child processes
+	struct list_elem proc_elem;
+
+	int exit_code;
+	struct semaphore wait_hang_sema;        // modifying wait_hang_sema must preceed modifying res_free_sema
+	struct semaphore res_free_sema;
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
