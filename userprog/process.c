@@ -32,6 +32,44 @@ struct fork_aux{
 	struct intr_frame* parent_if;	//Definitely User-space context(from system call)
 };
 
+static void
+process_file_map_init(struct thread* th){
+	th->file_map = (struct file**)malloc(sizeof(struct file*) * FILE_DESC_MAP_SIZE);
+	th->file_map[0] = NULL;	//STDIN
+	th->file_map[1] = NULL;	//STDOUT
+	th->file_next_desc = 2;
+}
+static void
+process_file_map_duplicate(struct thread* target, const struct thread* original){
+	process_file_map_init(target);
+	target->file_next_desc = original->file_next_desc;
+
+	for(int i=2; i<original->file_next_desc; ++i){
+		target->file_map[i] = file_duplicate(original->file_map[i]);
+	}
+}
+char* process_get_exec_filename(const char* file_name){
+	//결국엔 malloc을 한 번은 써 주어야만 했다..... 
+	//이럴 거면 애초에 아래에서 strtok로 뒤집는 저 X랄을 할 필요가...
+	const int cmdlen = strlen(file_name);
+	int end_pos = 0;
+	for(int i=0; i<cmdlen; ++i){
+		//printf("%d -> [%c]\n", i, file_name[i]);
+		if(file_name[i] == ' ' || file_name[i] == '\t' || file_name[i] == '\n'){
+			end_pos = i;
+			break;
+		}
+	}
+	if(end_pos == 0)
+		end_pos = cmdlen;
+	
+	char* exec_file_name = malloc(end_pos + 1);
+	memcpy(exec_file_name, file_name, end_pos);
+	exec_file_name[end_pos] = '\0';
+	//printf("process_get_filename() -> %s\n", exec_file_name);
+	return exec_file_name;
+}
+
 /* General process initializer for initd and other process. */
 static void
 process_init (void) {
@@ -56,7 +94,9 @@ process_create_initd (const char *file_name) {
 	strlcpy (fn_copy, file_name, PGSIZE);
 
 	/* Create a new thread to execute FILE_NAME. */
-	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
+	char* exec_file_name = process_get_exec_filename(file_name);
+	tid = thread_create (exec_file_name, PRI_DEFAULT, initd, fn_copy);
+	free(exec_file_name);
 	if (tid == TID_ERROR)
 		palloc_free_page (fn_copy);
 	return tid;
@@ -81,9 +121,13 @@ initd (void *f_name) {
 tid_t
 process_fork (const char *name, struct intr_frame *if_) {
 	/* Clone current thread to new thread.*/
-	struct fork_aux aux = {thread_current (), if_};
+	//printf("process_fork():if: rip=%llx, cs=%d\n", if_->rip,if_->cs);
+	struct fork_aux* aux = malloc(sizeof(struct fork_aux));
+	aux->parent= thread_current();
+	aux->parent_if = if_;
+
 	return thread_create (name,
-			PRI_DEFAULT, __do_fork, &aux);
+			PRI_DEFAULT, __do_fork, aux);
 }
 
 #ifndef VM
@@ -98,21 +142,30 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	bool writable;
 
 	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
+	if(is_kernel_vaddr(va)){
+		return true;
+	}
 
 	/* 2. Resolve VA from the parent's page map level 4. */
 	parent_page = pml4_get_page (parent->pml4, va);
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
+	newpage = palloc_get_page(PAL_USER);
 
 	/* 4. TODO: Duplicate parent's page to the new page and
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
 	 *    TODO: according to the result). */
+	memcpy(newpage, parent_page, PGSIZE);
+	writable = is_writable(pte);
 
 	/* 5. Add new page to child's page table at address VA with WRITABLE
 	 *    permission. */
 	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
 		/* 6. TODO: if fail to insert page, do error handling. */
+		// Page Table에 쓸 추가적인 메모리가 없으면 에러가 난다는데...
+		//-> 그래서 어쩌라, 메모리를 창조해서 넣어주랴...
+		puts("ERROR HANDLING NEEDED!");
 	}
 	return true;
 }
@@ -128,11 +181,13 @@ __do_fork (void *aux) {
 	struct thread *parent = ((struct fork_aux*)aux)->parent;
 	struct thread *current = thread_current ();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame *parent_if = ((struct fork_aux*)aux)->parent_if;
+	struct intr_frame *parent_if = ((struct fork_aux*)aux)->parent_if; // update register
 	bool succ = true;
 
 	/* 1. Read the cpu context to local stack. */
+	//printf("parent_if : rip=%llx, cs=%d\n", parent_if->rip, parent_if->cs);
 	memcpy (&if_, parent_if, sizeof (struct intr_frame));
+	if_.R.rax = 0;	//MUST RETURN 0 FOR CHILD.
 
 	/* 2. Duplicate PT */
 	current->pml4 = pml4_create();
@@ -154,10 +209,14 @@ __do_fork (void *aux) {
 	 * TODO:       in include/filesys/file.h. Note that parent should not return
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
+
+    // file duplicate
+    process_file_map_duplicate(current, parent);
 	
-
 	process_init ();
-
+	free(aux);
+	sema_up(&parent->fork_sema);
+	//printf("__do_fork() : tid=%d, return=%d, rip=%llx, succ=%d, cs=%d, cs(now)=%d\n", current->tid, if_.R.rax, if_.rip, succ,if_.cs, current->tf.cs);
 	/* Finally, switch to the newly created process. */
 	if (succ)
 		do_iret (&if_);
@@ -169,7 +228,10 @@ error:
  * Returns -1 on fail. */
 int
 process_exec (void *f_name) {
-	char *file_name = f_name;
+	const int f_name_len = strlen(f_name);
+	char* file_name = palloc_get_page(PAL_ZERO);
+	memcpy(file_name, f_name, f_name_len + 1);
+	
 	bool success;
 
 	/* We cannot use the intr_frame in the thread structure.
@@ -182,7 +244,7 @@ process_exec (void *f_name) {
 
 	/* We first kill the current context */
 	process_cleanup ();
-
+	//printf("file_name : %s\n", file_name);
 	/* And then load the binary */
 	success = load (file_name, &_if);
 
@@ -211,6 +273,7 @@ process_wait (tid_t child_tid) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	//printf("WAIT FOR %d\n", child_tid);
 	struct thread* curr = thread_current();
 	lock_acquire(&curr->child_procs_lock);
 	for(
@@ -221,10 +284,12 @@ process_wait (tid_t child_tid) {
 		struct thread* target = list_entry(cursor, struct thread, proc_elem);
 		if(target->tid == child_tid){
 			lock_release(&curr->child_procs_lock);
+			//puts("Parent hang on wait_hang_sema");
 			sema_down(&target->wait_hang_sema);
 			const int exit_code = target->exit_code;
+			//puts("Parent let child to be freed");
 			sema_up(&target->res_free_sema);
-
+			sema_down(&target->switch_to_child_sema);
 			//Removing from list is done by child itself.
 			return exit_code;
 		}
@@ -257,16 +322,21 @@ process_exit (void) {
 	lock_release(&curr->child_procs_lock);
 
 	//Allow parent's wait ends
+	
 	sema_up(&curr->wait_hang_sema);
-
 	//After getting resource_free_semaphore(allow for exit from parent, means wait called.)
+	//puts("Child hang on res_free_sema");
 	sema_down(&curr->res_free_sema);
+	//puts("Child pass res_free_sema");
 	
 	if(curr->parent != NULL){
 		lock_acquire(&curr->parent->child_procs_lock); // prevent sibbiling from accessing parent
 		list_remove(&curr->proc_elem); //Critical section
 		lock_release(&curr->parent->child_procs_lock);
+
+		sema_up(&curr->switch_to_child_sema);
 	}
+	printf ("%s: exit(%d)\n", curr->name, curr->exit_code);
 	process_cleanup ();
 }
 
@@ -386,24 +456,7 @@ load (const char *file_name, struct intr_frame *if_) {
 		goto done;
 	process_activate (thread_current ());
 
-	//결국엔 malloc을 한 번은 써 주어야만 했다..... 
-	//이럴 거면 애초에 아래에서 strtok로 뒤집는 저 X랄을 할 필요가...
-	const int cmdlen = strlen(file_name);
-	int end_pos = 0;
-	for(int i=0; i<cmdlen; ++i){
-		if(file_name[i] == ' ' || file_name[i] == '\t' || file_name[i] == '\n'){
-			//printf("%d -> [%c]\n", i, file_name[i]);
-			end_pos = i;
-			break;
-		}
-	}
-	if(end_pos == 0)
-		end_pos = cmdlen;
-	
-	char* exec_file_name = malloc(end_pos + 1);
-	memcpy(exec_file_name, file_name, end_pos);
-	exec_file_name[end_pos] = '\0';
-
+	char* exec_file_name = process_get_exec_filename(file_name);
 	/* Open executable file. */
 	file = filesys_open (exec_file_name);
 	if (file == NULL) {

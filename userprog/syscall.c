@@ -41,21 +41,58 @@ syscall_init (void) {
 			FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 }
 
+int syscall_get_page_cnt(const void* target_ptr, size_t length){
+	uint64_t pg_cnt = (uint64_t)target_ptr;
+    pg_cnt &= PGMASK;
+    uint64_t tail = (uint64_t)target_ptr & PGMASK;
+    tail = !!(tail);
+    pg_cnt += length;
+    pg_cnt >>= 12;
+    pg_cnt += tail;
+    return pg_cnt;
+	//return (length >> 12) + (length & PGMASK);
+}
 bool
-syscall_memcheck(void* target_ptr, size_t length){
+syscall_memcheck(const void* target_ptr, size_t length){
+	const struct thread* current = thread_current();
+
+	if(target_ptr == NULL)
+		return false;
 	uint64_t target_ptr_val = (uint64_t)target_ptr;
 	if(target_ptr_val >= KERN_BASE || target_ptr_val + length >= KERN_BASE){
 		return false;
 	}
 	//Else, check userspace page table entries.
-
+	const int page_cnt = syscall_get_page_cnt(target_ptr, length);
+	for(int i=0; i<page_cnt; ++i){
+		if(pml4e_walk(current->pml4, target_ptr_val + i * PGSIZE, 0) == NULL){
+			return false;
+		}
+	}
+	return true;
 }
-int syscall_read(){
-
+bool syscall_create(const char* path, unsigned initial_size){
+	if(!syscall_memcheck(path, 1)){
+		thread_exit();
+	}
+}
+int syscall_open(const char* path){
+    
+}
+int syscall_close(int fd){
+	
+}
+int syscall_read(int fd, void* buffer, unsigned size){
+	//1. Check user memory(buffer and size)
+	if(!syscall_memcheck(buffer, size)){
+		thread_exit();
+	}
 }
 int syscall_write(int fd, const void* buffer, unsigned size){
 	//1. Check user memory(buffer and size)
-
+	if(!syscall_memcheck(buffer, size)){
+		thread_exit();
+	}
 	//2. Do actions.
 	if(fd == 0){
 		return 0;
@@ -99,15 +136,16 @@ syscall_handler (struct intr_frame *f) {
 		
 		case SYS_FORK:
 			f->R.rax = 0;
+			//printf("SYS_FORK : rip=%llx, cs=%d\n",f->rip,f->cs);
 			const tid_t child_tid = process_fork((const char*)(syscall_args[0]), f);
 			//Return value differs. (parent vs child)
+			sema_down(&thread_current()->fork_sema);
 			if(child_tid != thread_current()->tid)
 				f->R.rax = child_tid;
 			break;
 		
 		case SYS_EXEC:
-			process_exec((const char*)(syscall_args[0]));
-			NOT_REACHED();
+			f->R.rax = process_exec((const char*)(syscall_args[0]));
 			break;
 		
 		case SYS_WAIT:
@@ -115,15 +153,15 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		
 		case SYS_CREATE:
-
+			f->R.rax = syscall_create(syscall_args[0], syscall_args[1]);
 			break;
 		
 		case SYS_REMOVE:
-
+			//f->R.rax = /*TODO*/;
 			break;
 		
 		case SYS_OPEN:
-
+			f->R.rax = syscall_open(syscall_args[0]);
 			break;
 		
 		case SYS_FILESIZE:
@@ -131,7 +169,7 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		
 		case SYS_READ:
-
+			f->R.rax = syscall_read(syscall_args[0], syscall_args[1], syscall_args[2]);
 			break;
 		
 		case SYS_WRITE:

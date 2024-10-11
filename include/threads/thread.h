@@ -37,6 +37,8 @@ typedef int tid_t;
 #define NICE_MAX 20
 #define NICE_DEFAULT 0
 
+#define FILE_DESC_MAP_SIZE 256
+
 
 struct CSB{
 	//Child Status Block
@@ -160,6 +162,12 @@ struct thread {
 	int exit_code;
 	struct semaphore wait_hang_sema;        // modifying wait_hang_sema must preceed modifying res_free_sema
 	struct semaphore res_free_sema;
+
+	struct semaphore switch_to_child_sema;
+	struct semaphore fork_sema;
+	
+	struct file** file_map;
+	int file_next_desc;
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */

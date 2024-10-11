@@ -785,6 +785,8 @@ init_thread (struct thread *t, const char *name, int priority) {
 	lock_init(&t->child_procs_lock);
 	sema_init(&t->wait_hang_sema, 0);
 	sema_init(&t->res_free_sema, 0);
+	sema_init(&t->switch_to_child_sema, 0);
+	sema_init(&t->fork_sema, 0);
 	t->parent = NULL;                   // very first thread has no parent; he is Adam!
 	t->exit_code = -1;					//Default exit code is -1
 	#endif
