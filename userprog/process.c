@@ -394,6 +394,7 @@ process_exec (void *f_name) {
 		//기존의 실행 파일은 닫는다.
 		if(thread_current()->exec_file != NULL){
 			file_close(thread_current()->exec_file);
+			thread_current()->exec_file = NULL;
 		}
 	)
 	process_cleanup ();
@@ -486,8 +487,10 @@ process_exit (void) {
 	process_file_map_free(curr);
 
 	lock_acquire(&file_lock);
+	//puts("FILE_LOCKED");
 	if(curr->exec_file != NULL)
 		file_close(curr->exec_file);
+	//puts("FILE_UNLOCKED");
 	lock_release(&file_lock);
 
 	if(curr->parent != NULL){
@@ -621,13 +624,13 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* Open executable file. */
 	lock_acquire(&file_lock);
 	file = filesys_open (exec_file_name);
+	t->exec_file = file;
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", exec_file_name);
 		free(exec_file_name);
 		goto done;
 	}
 	//For denying write on exec.
-	t->exec_file = file;
 	file_deny_write(t->exec_file);
 
 	free(exec_file_name);
