@@ -18,9 +18,14 @@
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+
+#include "devices/input.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
+
+#define SAFE_LOCK_FILESYS(code) lock_acquire(&file_lock); code lock_release(&file_lock);
+
 
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
@@ -32,22 +37,156 @@ struct fork_aux{
 	struct intr_frame* parent_if;	//Definitely User-space context(from system call)
 };
 
+
+struct lock file_lock;	//Global Filesystem lock
+
 static void
 process_file_map_init(struct thread* th){
 	th->file_map = (struct file**)malloc(sizeof(struct file*) * FILE_DESC_MAP_SIZE);
 	th->file_map[0] = NULL;	//STDIN
 	th->file_map[1] = NULL;	//STDOUT
 	th->file_next_desc = 2;
+	for(int i=2; i<FILE_DESC_MAP_SIZE; ++i){
+		th->file_map[i] = NULL;
+	}
 }
+
+static void
+process_file_map_free(struct thread* th){
+	lock_acquire(&file_lock);
+	for(int i=2; i<th->file_next_desc; ++i){
+		if(th->file_map[i] != NULL)
+			file_close(th->file_map[i]);
+	}
+	lock_release(&file_lock);
+	th->file_next_desc = 2;
+	free(th->file_map);
+}
+
 static void
 process_file_map_duplicate(struct thread* target, const struct thread* original){
-	process_file_map_init(target);
+	//process_file_map_init(target);
 	target->file_next_desc = original->file_next_desc;
 
+	lock_acquire(&file_lock);
 	for(int i=2; i<original->file_next_desc; ++i){
 		target->file_map[i] = file_duplicate(original->file_map[i]);
 	}
+	lock_release(&file_lock);
 }
+
+static int process_get_new_fd(struct thread* target){
+	const int ret_fd = target->file_next_desc;
+	target->file_next_desc++;
+	return ret_fd;
+}
+static bool process_check_fd(struct thread* target, int fd){
+	if(fd < 2 || fd > FILE_DESC_MAP_SIZE){
+		return false;
+	}
+    else if (target->file_map[fd] == NULL) {
+        return false;
+    }
+	//printf("process_check_fd:next_fd=%d\n", target->file_next_desc);
+	//printf("process_check_fd:fd=%d, true\n", fd);
+	return true;
+}
+bool process_create_file(struct thread* target, const char* file, unsigned initial_size){
+	bool ret_val = false;
+	SAFE_LOCK_FILESYS(
+		ret_val = filesys_create(file, initial_size);
+	)
+	return ret_val;
+}
+bool process_remove_file(struct thread* target, const char* file){
+	bool ret_val = false;
+	SAFE_LOCK_FILESYS(
+		ret_val = filesys_remove(file);
+	)
+	return ret_val;
+}
+int process_open_file(struct thread* target, const char* file){
+	struct file* open_file = NULL;
+	SAFE_LOCK_FILESYS(
+		open_file = filesys_open(file);
+	)
+	if(open_file == NULL){
+		return -1;
+	}
+	const int ret_fd = process_get_new_fd(target);
+	target->file_map[ret_fd] = open_file;
+	return ret_fd;
+}
+int process_filesize(struct thread* target, int fd){
+	if(!process_check_fd(target, fd)){
+		return -1;
+	}
+	int file_size = 0;
+	SAFE_LOCK_FILESYS(
+		file_size = file_length(target->file_map[fd]);
+	)
+	return file_size;
+}
+int process_read(struct thread* target, int fd, void* buffer, unsigned size){
+	if(fd == STDIN_FILENO){
+		for(int i=0; i<size; ++i){
+			((char*)buffer)[i] = input_getc();
+		}
+	}
+	else if(!process_check_fd(target, fd)){
+		return -1;
+	}
+	int ret_val;
+	SAFE_LOCK_FILESYS(
+		ret_val = file_read(target->file_map[fd], buffer, size);
+	)
+	return ret_val;
+}
+int process_write(struct thread* target, int fd, const void* buffer, unsigned size){
+	if(fd == STDOUT_FILENO){
+		putbuf(buffer, size);
+		return size;
+	}
+	else if(!process_check_fd(target, fd)){
+		return -1;
+	}
+	int ret_val;
+	SAFE_LOCK_FILESYS(
+		ret_val = file_write(target->file_map[fd], buffer, size);
+	)
+	return ret_val;
+}
+void process_seek(struct thread* target, int fd, unsigned position){
+	if(!process_check_fd(target, fd)){
+		return;
+	}
+	SAFE_LOCK_FILESYS(
+		int file_size = file_length(target->file_map[fd]);
+		if(file_size < position)
+			file_seek(target->file_map[fd], position);
+	)
+}
+unsigned process_tell(struct thread* target, int fd){
+	if(!process_check_fd(target, fd)){
+		return 0;
+	}
+	unsigned ret_val;
+	SAFE_LOCK_FILESYS(
+		ret_val = file_tell(target->file_map[fd]);
+	)
+	return ret_val;
+}
+void process_close(struct thread* target, int fd){
+	if(!process_check_fd(target, fd)){
+		return;
+	}
+	SAFE_LOCK_FILESYS(
+		//printf("process_close : fd=%d\n",fd);
+		file_close(target->file_map[fd]);
+		target->file_map[fd] = NULL;
+	)
+}
+
 char* process_get_exec_filename(const char* file_name){
 	//결국엔 malloc을 한 번은 써 주어야만 했다..... 
 	//이럴 거면 애초에 아래에서 strtok로 뒤집는 저 X랄을 할 필요가...
@@ -74,6 +213,7 @@ char* process_get_exec_filename(const char* file_name){
 static void
 process_init (void) {
 	struct thread *current = thread_current ();
+	process_file_map_init(current);
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -85,6 +225,7 @@ tid_t
 process_create_initd (const char *file_name) {
 	char *fn_copy;
 	tid_t tid;
+	lock_init(&file_lock);
 
 	/* Make a copy of FILE_NAME.
 	 * Otherwise there's a race between the caller and load(). */
@@ -210,10 +351,14 @@ __do_fork (void *aux) {
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
 
-    // file duplicate
-    process_file_map_duplicate(current, parent);
-	
 	process_init ();
+	// file duplicate
+	SAFE_LOCK_FILESYS(
+	if(parent->exec_file != NULL)
+		current -> exec_file = file_duplicate(parent->exec_file);	/*ROX-CHILD, ROX-MULTICHILD*/
+	)
+    process_file_map_duplicate(current, parent);
+
 	free(aux);
 	sema_up(&parent->fork_sema);
 	//printf("__do_fork() : tid=%d, return=%d, rip=%llx, succ=%d, cs=%d, cs(now)=%d\n", current->tid, if_.R.rax, if_.rip, succ,if_.cs, current->tf.cs);
@@ -243,6 +388,14 @@ process_exec (void *f_name) {
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
 	/* We first kill the current context */
+	//process_file_map_free and init commented due to policy.
+	//process_file_map_free(thread_current());
+	SAFE_LOCK_FILESYS(
+		//기존의 실행 파일은 닫는다.
+		if(thread_current()->exec_file != NULL){
+			file_close(thread_current()->exec_file);
+		}
+	)
 	process_cleanup ();
 	//printf("file_name : %s\n", file_name);
 	/* And then load the binary */
@@ -250,9 +403,11 @@ process_exec (void *f_name) {
 
 	/* If load failed, quit. */
 	palloc_free_page (file_name);
-	if (!success)
+	if (!success){
 		return -1;
-
+	}
+		
+	//process_file_map_init(thread_current());
 	/* Start switched process. */
 	do_iret (&_if);
 	NOT_REACHED ();
@@ -328,7 +483,13 @@ process_exit (void) {
 	//puts("Child hang on res_free_sema");
 	sema_down(&curr->res_free_sema);
 	//puts("Child pass res_free_sema");
-	
+	process_file_map_free(curr);
+
+	lock_acquire(&file_lock);
+	if(curr->exec_file != NULL)
+		file_close(curr->exec_file);
+	lock_release(&file_lock);
+
 	if(curr->parent != NULL){
 		lock_acquire(&curr->parent->child_procs_lock); // prevent sibbiling from accessing parent
 		list_remove(&curr->proc_elem); //Critical section
@@ -458,12 +619,17 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	char* exec_file_name = process_get_exec_filename(file_name);
 	/* Open executable file. */
+	lock_acquire(&file_lock);
 	file = filesys_open (exec_file_name);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", exec_file_name);
 		free(exec_file_name);
 		goto done;
 	}
+	//For denying write on exec.
+	t->exec_file = file;
+	file_deny_write(t->exec_file);
+
 	free(exec_file_name);
 	/* Read and verify executable header. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -598,7 +764,11 @@ load (const char *file_name, struct intr_frame *if_) {
 
 done:
 	/* We arrive here whether the load is successful or not. */
-	file_close (file);
+	//Originally, it should close file here, but for denying writes on exec.
+	//	We close file in process_exit, after res_free_sema()
+
+	//file_close (file);
+	lock_release(&file_lock);
 	return success;
 }
 

@@ -166,6 +166,7 @@ struct thread {
 	struct semaphore switch_to_child_sema;
 	struct semaphore fork_sema;
 	
+	struct file* exec_file;
 	struct file** file_map;
 	int file_next_desc;
 #endif

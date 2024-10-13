@@ -42,15 +42,65 @@ syscall_init (void) {
 }
 
 int syscall_get_page_cnt(const void* target_ptr, size_t length){
-	uint64_t pg_cnt = (uint64_t)target_ptr;
+	uint64_t target_ptr_vaddr = (uint64_t)target_ptr;
+	uint64_t padding = PGSIZE - target_ptr_vaddr & PGMASK;
+
+	int page_cnt = 0;
+	if(padding != PGSIZE){
+		page_cnt++;
+		target_ptr_vaddr += padding;
+	}
+	page_cnt += (length / PGSIZE);
+	if(length % PGSIZE != 0){
+		page_cnt ++;
+	}
+	return page_cnt;
+
+	/*uint64_t pg_cnt = (uint64_t)target_ptr;
     pg_cnt &= PGMASK;
     uint64_t tail = (uint64_t)target_ptr & PGMASK;
     tail = !!(tail);
     pg_cnt += length;
     pg_cnt >>= 12;
     pg_cnt += tail;
-    return pg_cnt;
+    // printf("tail: %d\n", tail);
+    return pg_cnt;*/
 	//return (length >> 12) + (length & PGMASK);
+}
+bool
+syscall_memcheck_str(const char* target_str){
+	const struct thread* current = thread_current();
+	const uint64_t target_str_vaddr = (uint64_t) target_str;
+	if(target_str == NULL)
+		return false;
+	if(is_kernel_vaddr(target_str_vaddr))
+		return false;
+	
+	//Else, check userspace page table entries and 
+	//check string length.
+	const max_page_cnt = 2;
+	int page_present = 2;
+	for(int i=0; i<max_page_cnt; ++i){
+		if(pml4e_walk(current->pml4, target_str_vaddr + i * PGSIZE, 0) == NULL){
+			page_present = i;
+			break;
+		}
+	}
+	//printf("page_present : %d\n", page_present);
+	int max_str_len = 0;
+	if(page_present == 0){
+		return false;
+	}
+	else if(page_present == 1){
+		//1 page
+		max_str_len = PGSIZE - (target_str_vaddr & PGMASK);
+	}else{
+		//2 pages
+		max_str_len = PGSIZE;
+	}
+    //Check null termination
+	//printf("max_str_len = %d, strnlen(target_str, max_str_len) = %d\n", max_str_len, strnlen(target_str, max_str_len));
+	return max_str_len != strnlen(target_str, max_str_len);
 }
 bool
 syscall_memcheck(const void* target_ptr, size_t length){
@@ -64,29 +114,42 @@ syscall_memcheck(const void* target_ptr, size_t length){
 	}
 	//Else, check userspace page table entries.
 	const int page_cnt = syscall_get_page_cnt(target_ptr, length);
+	//printf("syscall_memcheck:page_cnt=%d\n", page_cnt);
 	for(int i=0; i<page_cnt; ++i){
 		if(pml4e_walk(current->pml4, target_ptr_val + i * PGSIZE, 0) == NULL){
 			return false;
 		}
 	}
+	//puts("syscall_memcheck()->true");
 	return true;
 }
 bool syscall_create(const char* path, unsigned initial_size){
-	if(!syscall_memcheck(path, 1)){
+	if(!syscall_memcheck_str(path)){
 		thread_exit();
 	}
+	return process_create_file(thread_current(), path, initial_size);
+}
+bool syscall_remove(const char* file){
+	if(!syscall_memcheck_str(file)){
+		thread_exit();
+	}
+	return process_remove_file(thread_current(), file);
 }
 int syscall_open(const char* path){
-    
+    if(!syscall_memcheck_str(path)){
+		thread_exit();
+	}
+	return process_open_file(thread_current(), path);
 }
-int syscall_close(int fd){
-	
+int syscall_filesize(int fd){
+	return process_filesize(thread_current(), fd);
 }
 int syscall_read(int fd, void* buffer, unsigned size){
 	//1. Check user memory(buffer and size)
 	if(!syscall_memcheck(buffer, size)){
 		thread_exit();
 	}
+	return process_read(thread_current(), fd, buffer, size);
 }
 int syscall_write(int fd, const void* buffer, unsigned size){
 	//1. Check user memory(buffer and size)
@@ -94,17 +157,17 @@ int syscall_write(int fd, const void* buffer, unsigned size){
 		thread_exit();
 	}
 	//2. Do actions.
-	if(fd == 0){
-		return 0;
-	}
-	else if(fd == 1){
-		//Write into console.
-		putbuf(buffer, size);
-	}
-	else{
-		//File operations
-
-	}
+	return process_write(thread_current(), fd, buffer, size);
+}
+void syscall_seek(int fd, unsigned position){
+	process_seek(thread_current(), fd, position);
+}
+unsigned syscall_tell(int fd){
+	return process_tell(thread_current(), fd);
+}
+void syscall_close(int fd){
+	//printf("syscall_close : fd=%d\n", fd);
+	process_close(thread_current(), fd);
 }
 /* The main system call interface */
 void
@@ -135,6 +198,9 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		
 		case SYS_FORK:
+			if(!syscall_memcheck_str(syscall_args[0])){
+				thread_exit();
+			}
 			f->R.rax = 0;
 			//printf("SYS_FORK : rip=%llx, cs=%d\n",f->rip,f->cs);
 			const tid_t child_tid = process_fork((const char*)(syscall_args[0]), f);
@@ -145,7 +211,12 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		
 		case SYS_EXEC:
+			if(!syscall_memcheck_str(syscall_args[0])){
+				thread_exit();
+			}
 			f->R.rax = process_exec((const char*)(syscall_args[0]));
+			thread_exit();
+			//printf("exec() failed : %d\n", f->R.rax);
 			break;
 		
 		case SYS_WAIT:
@@ -157,7 +228,7 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		
 		case SYS_REMOVE:
-			//f->R.rax = /*TODO*/;
+			f->R.rax = syscall_remove(syscall_args[0]);
 			break;
 		
 		case SYS_OPEN:
@@ -165,7 +236,7 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		
 		case SYS_FILESIZE:
-
+			f->R.rax = syscall_filesize(syscall_args[0]);
 			break;
 		
 		case SYS_READ:
@@ -177,14 +248,14 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		
 		case SYS_SEEK:
-
+			syscall_seek(syscall_args[0], syscall_args[1]);
 			break;
 		case SYS_TELL:
-
+			f->R.rax = syscall_tell(syscall_args[0]);
 			break;
 		
 		case SYS_CLOSE:
-
+			syscall_close(syscall_args[0]);
 			break;
 		//Project 3, 4
 		default:
