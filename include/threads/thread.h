@@ -154,6 +154,7 @@ struct thread {
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
 	
+	bool is_process;
 	struct thread* parent;
 	struct lock child_procs_lock;
 	struct list child_procs;					// Child processes

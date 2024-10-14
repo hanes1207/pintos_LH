@@ -39,6 +39,7 @@ struct fork_aux{
 
 
 struct lock file_lock;	//Global Filesystem lock
+struct semaphore initd_ordering;
 
 static void
 process_file_map_init(struct thread* th){
@@ -227,7 +228,12 @@ char* process_get_exec_filename(const char* file_name){
 static void
 process_init (void) {
 	struct thread *current = thread_current ();
+	current->is_process = true;
 	process_file_map_init(current);
+	lock_acquire(&current->parent->child_procs_lock);
+	struct list* child_proc_list = &current->parent->child_procs;
+	list_push_back(child_proc_list, &current->proc_elem);
+	lock_release(&current->parent->child_procs_lock);
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -240,6 +246,7 @@ process_create_initd (const char *file_name) {
 	char *fn_copy;
 	tid_t tid;
 	lock_init(&file_lock);
+	sema_init(&initd_ordering, 0);
 
 	/* Make a copy of FILE_NAME.
 	 * Otherwise there's a race between the caller and load(). */
@@ -251,6 +258,8 @@ process_create_initd (const char *file_name) {
 	/* Create a new thread to execute FILE_NAME. */
 	char* exec_file_name = process_get_exec_filename(file_name);
 	tid = thread_create (exec_file_name, PRI_DEFAULT, initd, fn_copy);
+	sema_down(&initd_ordering);
+
 	free(exec_file_name);
 	if (tid == TID_ERROR)
 		palloc_free_page (fn_copy);
@@ -263,8 +272,8 @@ initd (void *f_name) {
 #ifdef VM
 	supplemental_page_table_init (&thread_current ()->spt);
 #endif
-
 	process_init ();
+	sema_up(&initd_ordering);
 
 	if (process_exec (f_name) < 0)
 		PANIC("Fail to launch initd\n");
@@ -486,7 +495,6 @@ process_exit (void) {
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 	process_cleanup ();
-
 	//Allow all child's resource free before die
 	lock_acquire(&curr->child_procs_lock);
 	for(
@@ -506,6 +514,7 @@ process_exit (void) {
 	sema_down(&curr->res_free_sema);
 	
 	process_file_map_free(curr);
+
 	lock_acquire(&file_lock);
 	if(curr->exec_file != NULL)
 		file_close(curr->exec_file);

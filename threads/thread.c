@@ -331,11 +331,6 @@ thread_create (const char *name, int priority,
 	t->tf.eflags = FLAG_IF;
 
 	#ifdef USERPROG
-	lock_acquire(&thread_current()->child_procs_lock);
-	struct list* child_proc_list = &thread_current()->child_procs;
-	list_push_back(child_proc_list, &t->proc_elem);
-	lock_release(&thread_current()->child_procs_lock);
-
 	t->parent = thread_current();
 	#endif
 
@@ -438,7 +433,10 @@ thread_exit (void) {
 	ASSERT (!intr_context ());
 
 #ifdef USERPROG
-	process_exit ();
+    //printf("Is this process(%s)?: %d\n",thread_current()->name, thread_current()->is_process);
+	if(thread_current()->is_process) {
+		process_exit ();
+    }
 #endif
 
 	/* Just set our status to dying and schedule another process.
@@ -781,6 +779,7 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->lock_ptr = NULL;
 
 	#ifdef USERPROG
+	t->is_process = false;
 	list_init(&t->child_procs);
 	lock_init(&t->child_procs_lock);
 	sema_init(&t->wait_hang_sema, 0);
