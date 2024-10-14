@@ -169,6 +169,8 @@ struct thread {
 	struct file* exec_file;
 	struct file** file_map;
 	int file_next_desc;
+
+	tid_t fork_child_tid;
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */

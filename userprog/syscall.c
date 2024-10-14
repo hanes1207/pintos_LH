@@ -201,13 +201,8 @@ syscall_handler (struct intr_frame *f) {
 			if(!syscall_memcheck_str(syscall_args[0])){
 				thread_exit();
 			}
-			f->R.rax = 0;
 			//printf("SYS_FORK : rip=%llx, cs=%d\n",f->rip,f->cs);
-			const tid_t child_tid = process_fork((const char*)(syscall_args[0]), f);
-			//Return value differs. (parent vs child)
-			sema_down(&thread_current()->fork_sema);
-			if(child_tid != thread_current()->tid)
-				f->R.rax = child_tid;
+			f->R.rax = process_fork((const char*)(syscall_args[0]), f);
 			break;
 		
 		case SYS_EXEC:

@@ -65,18 +65,28 @@ process_file_map_free(struct thread* th){
 
 static void
 process_file_map_duplicate(struct thread* target, const struct thread* original){
+	ASSERT(target != NULL);
+	ASSERT(original != NULL);
 	//process_file_map_init(target);
 	target->file_next_desc = original->file_next_desc;
 
+	ASSERT(target->file_map != NULL);
+	ASSERT(original->file_map != NULL);
 	lock_acquire(&file_lock);
 	for(int i=2; i<original->file_next_desc; ++i){
-		target->file_map[i] = file_duplicate(original->file_map[i]);
+		if(original->file_map[i] != NULL){
+			ASSERT(original->file_map[i] != NULL);
+			//printf("[%d] : %p\n", i, original->file_map[i]);
+			target->file_map[i] = file_duplicate(original->file_map[i]);
+		}
 	}
 	lock_release(&file_lock);
 }
 
 static int process_get_new_fd(struct thread* target){
 	const int ret_fd = target->file_next_desc;
+	if(ret_fd >= FILE_DESC_MAP_SIZE)
+		return -1;
 	target->file_next_desc++;
 	return ret_fd;
 }
@@ -107,13 +117,17 @@ bool process_remove_file(struct thread* target, const char* file){
 }
 int process_open_file(struct thread* target, const char* file){
 	struct file* open_file = NULL;
+	const int ret_fd = process_get_new_fd(target);
+	if(ret_fd == -1){
+		return ret_fd;
+	}
+
 	SAFE_LOCK_FILESYS(
 		open_file = filesys_open(file);
 	)
 	if(open_file == NULL){
 		return -1;
 	}
-	const int ret_fd = process_get_new_fd(target);
 	target->file_map[ret_fd] = open_file;
 	return ret_fd;
 }
@@ -162,7 +176,7 @@ void process_seek(struct thread* target, int fd, unsigned position){
 	}
 	SAFE_LOCK_FILESYS(
 		int file_size = file_length(target->file_map[fd]);
-		if(file_size < position)
+		if(file_size > position)
 			file_seek(target->file_map[fd], position);
 	)
 }
@@ -266,9 +280,13 @@ process_fork (const char *name, struct intr_frame *if_) {
 	struct fork_aux* aux = malloc(sizeof(struct fork_aux));
 	aux->parent= thread_current();
 	aux->parent_if = if_;
-
-	return thread_create (name,
+	tid_t child_tid =  thread_create (name,
 			PRI_DEFAULT, __do_fork, aux);
+	if(child_tid != TID_ERROR){
+		sema_down(&thread_current()->fork_sema);
+		child_tid = thread_current()->fork_child_tid;
+	}
+	return child_tid;
 }
 
 #ifndef VM
@@ -306,7 +324,7 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 		/* 6. TODO: if fail to insert page, do error handling. */
 		// Page Table에 쓸 추가적인 메모리가 없으면 에러가 난다는데...
 		//-> 그래서 어쩌라, 메모리를 창조해서 넣어주랴...
-		puts("ERROR HANDLING NEEDED!");
+		return false;
 	}
 	return true;
 }
@@ -325,6 +343,7 @@ __do_fork (void *aux) {
 	struct intr_frame *parent_if = ((struct fork_aux*)aux)->parent_if; // update register
 	bool succ = true;
 
+	parent->fork_child_tid = TID_ERROR;
 	/* 1. Read the cpu context to local stack. */
 	//printf("parent_if : rip=%llx, cs=%d\n", parent_if->rip, parent_if->cs);
 	memcpy (&if_, parent_if, sizeof (struct intr_frame));
@@ -353,19 +372,22 @@ __do_fork (void *aux) {
 
 	process_init ();
 	// file duplicate
+	//printf("__do_fork(): thread_name=%s, file duplication\n", current->name);
 	SAFE_LOCK_FILESYS(
 	if(parent->exec_file != NULL)
 		current -> exec_file = file_duplicate(parent->exec_file);	/*ROX-CHILD, ROX-MULTICHILD*/
 	)
     process_file_map_duplicate(current, parent);
-
-	free(aux);
 	sema_up(&parent->fork_sema);
+	free(aux);
+	parent->fork_child_tid = current->tid;
 	//printf("__do_fork() : tid=%d, return=%d, rip=%llx, succ=%d, cs=%d, cs(now)=%d\n", current->tid, if_.R.rax, if_.rip, succ,if_.cs, current->tf.cs);
 	/* Finally, switch to the newly created process. */
 	if (succ)
 		do_iret (&if_);
 error:
+	sema_up(&parent->fork_sema);
+	free(aux);
 	thread_exit ();
 }
 
@@ -463,6 +485,7 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
+	process_cleanup ();
 
 	//Allow all child's resource free before die
 	lock_acquire(&curr->child_procs_lock);
@@ -478,19 +501,14 @@ process_exit (void) {
 	lock_release(&curr->child_procs_lock);
 
 	//Allow parent's wait ends
-	
 	sema_up(&curr->wait_hang_sema);
 	//After getting resource_free_semaphore(allow for exit from parent, means wait called.)
-	//puts("Child hang on res_free_sema");
 	sema_down(&curr->res_free_sema);
-	//puts("Child pass res_free_sema");
+	
 	process_file_map_free(curr);
-
 	lock_acquire(&file_lock);
-	//puts("FILE_LOCKED");
 	if(curr->exec_file != NULL)
 		file_close(curr->exec_file);
-	//puts("FILE_UNLOCKED");
 	lock_release(&file_lock);
 
 	if(curr->parent != NULL){
@@ -501,7 +519,7 @@ process_exit (void) {
 		sema_up(&curr->switch_to_child_sema);
 	}
 	printf ("%s: exit(%d)\n", curr->name, curr->exit_code);
-	process_cleanup ();
+	
 }
 
 /* Free the current process's resources. */
@@ -621,6 +639,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	process_activate (thread_current ());
 
 	char* exec_file_name = process_get_exec_filename(file_name);
+	//printf("load() : load executable(%s)\n", exec_file_name);
 	/* Open executable file. */
 	lock_acquire(&file_lock);
 	file = filesys_open (exec_file_name);
