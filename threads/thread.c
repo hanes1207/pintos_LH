@@ -519,7 +519,7 @@ thread_set_priority (int new_priority) {
 		//If priority change for this thread makes difference in max(ready_list->priority),
 		//	Then this thread should yield.
 		struct thread* curr = thread_current ();
-		struct list_elem *e = list_begin (&sleep_list);
+		struct list_elem *e = list_begin (&ready_list);
 		struct thread *tmp = list_entry (e, struct thread, elem);
 		int priority_tmp = tmp->priority;
 		int dpriority_tmp = tmp->dpriority;
