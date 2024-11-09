@@ -22,6 +22,10 @@ static const struct page_operations uninit_ops = {
 	.type = VM_UNINIT,
 };
 
+// 여기서 .operations = &uninit_ops --> operations는 아직 uninit에 관한 ops이다.
+// uninit_initialize가 실행이 되면, uninit->page_initializer (page, uninit->type, kva) 코드가
+// anon_initializer 또는 file_backed_initializer를 실행시키고
+// 이 initializer에서 .operations 재설정 해준다.
 /* DO NOT MODIFY this function */
 void
 uninit_new (struct page *page, void *va, vm_initializer *init,
@@ -50,7 +54,7 @@ uninit_initialize (struct page *page, void *kva) {
 	/* Fetch first, page_initialize may overwrite the values */
 	vm_initializer *init = uninit->init;
 	void *aux = uninit->aux;
-
+	
 	/* TODO: You may need to fix this function. */
 	return uninit->page_initializer (page, uninit->type, kva) &&
 		(init ? init (page, aux) : true);

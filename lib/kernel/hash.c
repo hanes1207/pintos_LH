@@ -25,7 +25,7 @@ bool
 hash_init (struct hash *h,
 		hash_hash_func *hash, hash_less_func *less, void *aux) {
 	h->elem_cnt = 0;
-	h->bucket_cnt = 4;
+	h->bucket_cnt = 16;
 	h->buckets = malloc (sizeof *h->buckets * h->bucket_cnt);
 	h->hash = hash;
 	h->less = less;
@@ -280,6 +280,7 @@ hash_int (int i) {
 static struct list *
 find_bucket (struct hash *h, struct hash_elem *e) {
 	size_t bucket_idx = h->hash (e, h->aux) & (h->bucket_cnt - 1);
+	//printf("find_bucket() -> %d\n", bucket_idx);
 	return &h->buckets[bucket_idx];
 }
 
@@ -289,10 +290,13 @@ static struct hash_elem *
 find_elem (struct hash *h, struct list *bucket, struct hash_elem *e) {
 	struct list_elem *i;
 
+	int counter=0;
 	for (i = list_begin (bucket); i != list_end (bucket); i = list_next (i)) {
 		struct hash_elem *hi = list_elem_to_hash_elem (i);
+		//printf("find_elem():counter=%d\n",counter);
 		if (!h->less (hi, e, h->aux) && !h->less (e, hi, h->aux))
 			return hi;
+		counter++;
 	}
 	return NULL;
 }

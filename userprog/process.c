@@ -22,6 +22,7 @@
 #include "devices/input.h"
 #ifdef VM
 #include "vm/vm.h"
+#include "threads/malloc.h"
 #endif
 
 #define SAFE_LOCK_FILESYS(code) lock_acquire(&file_lock); code lock_release(&file_lock);
@@ -728,8 +729,11 @@ load (const char *file_name, struct intr_frame *if_) {
 	}
 
 	/* Set up stack. */
-	if (!setup_stack (if_))
+	if (!setup_stack (if_)){
+		puts("setup_stack() failed");
 		goto done;
+	}
+		
 
 	/* Start address. */
 	if_->rip = ehdr.e_entry;
@@ -792,6 +796,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	if_->R.rsi = (uint64_t)(if_->rsp + 8);	//argv(char*[])
 	
 	success = true;
+	//printf("load() : rsp = %p\n", if_->rsp);
 
 done:
 	/* We arrive here whether the load is successful or not. */
@@ -951,12 +956,28 @@ install_page (void *upage, void *kpage, bool writable) {
 /* From here, codes will be used after project 3.
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
+struct lazy_load_aux{
+	struct file* exec_file;
+	size_t read_from;
+	size_t read_size;
+};
 
 static bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	struct lazy_load_aux * laux = aux;
+	size_t actual_read = 0;
+	bool ret_status = false;
+	//printf("lazy_load_segment() for addr[%p]\n", page->va);
+	SAFE_LOCK_FILESYS(
+		actual_read = file_read_at(laux->exec_file, page->frame->kva, laux->read_size, laux->read_from);
+		ret_status = actual_read == laux->read_size;
+	)
+	//This aux data no longer needed
+	free(aux);
+	return ret_status;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -979,6 +1000,9 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 	ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
 	ASSERT (pg_ofs (upage) == 0);
 	ASSERT (ofs % PGSIZE == 0);
+	
+	file_seek(file, ofs);	//TRAP;;
+	size_t file_read_from = ofs;
 
 	while (read_bytes > 0 || zero_bytes > 0) {
 		/* Do calculate how to fill this page.
@@ -988,16 +1012,25 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
-			return false;
+		struct lazy_load_aux *aux = malloc(sizeof(struct lazy_load_aux));
+		aux->exec_file = file;
+		aux->read_from = file_read_from;
+		aux->read_size = page_read_bytes;
+		file_read_from += page_read_bytes;
 
+		//void *aux = NULL;
+		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
+					writable, lazy_load_segment, aux)){
+			PANIC("FAILED TO ALLOCATE PAGE");
+			return false;
+		}
+		
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
 	}
+	//puts("load_segment succeed");
 	return true;
 }
 
@@ -1011,7 +1044,11 @@ setup_stack (struct intr_frame *if_) {
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
-
+	//puts("setup_stack->vm_claim_page()");
+	if(success = vm_claim_page(stack_bottom)){
+		if_->rsp = USER_STACK;
+	}
+	ASSERT(success)
 	return success;
 }
 #endif /* VM */
