@@ -25,7 +25,7 @@
 #include "threads/malloc.h"
 #endif
 
-#define SAFE_LOCK_FILESYS(code) lock_acquire(&file_lock); code lock_release(&file_lock);
+#define SAFE_LOCK_FILESYS(code) if(!lock_held_by_current_thread(&file_lock)){lock_acquire(&file_lock);} code if(lock_held_by_current_thread(&file_lock)){lock_release(&file_lock);}
 
 
 static void process_cleanup (void);
@@ -55,12 +55,12 @@ process_file_map_init(struct thread* th){
 
 static void
 process_file_map_free(struct thread* th){
-	lock_acquire(&file_lock);
-	for(int i=2; i<th->file_next_desc; ++i){
-		if(th->file_map[i] != NULL)
-			file_close(th->file_map[i]);
-	}
-	lock_release(&file_lock);
+	SAFE_LOCK_FILESYS(
+		for(int i=2; i<th->file_next_desc; ++i){
+			if(th->file_map[i] != NULL)
+				file_close(th->file_map[i]);
+		}
+	)
 	th->file_next_desc = 2;
 	free(th->file_map);
 }
@@ -128,8 +128,10 @@ int process_open_file(struct thread* target, const char* file){
 		open_file = filesys_open(file);
 	)
 	if(open_file == NULL){
+		//puts("OPEN : NO SUCH FILE");
 		return -1;
 	}
+	//printf("opened_file = %d\n", ret_fd);
 	target->file_map[ret_fd] = open_file;
 	return ret_fd;
 }
@@ -148,13 +150,31 @@ int process_read(struct thread* target, int fd, void* buffer, unsigned size){
 		for(int i=0; i<size; ++i){
 			((char*)buffer)[i] = input_getc();
 		}
+		return size;
 	}
 	else if(!process_check_fd(target, fd)){
 		return -1;
 	}
+	#ifdef VM
+	struct page* page = spt_find_page(&target->spt, buffer);
+	if(page != NULL){
+		//printf("found page : va=%p, writable=%d\n", page->va, page->writable);
+		if(!page->writable){
+			thread_exit();
+		}
+		//vm_claim_page(pg_round_down(buffer));
+	} else {
+		//NOT FOUND FROM SPT -> NOT VALID
+		//puts("NOT FOUND");
+		thread_exit();
+	}
+	#endif
 	int ret_val;
 	SAFE_LOCK_FILESYS(
 		ret_val = file_read(target->file_map[fd], buffer, size);
+
+		//file_read doesn't make any page fault exception. WTF.
+		//ret_val = file_read(target->file_map[fd], (void*)0xDEADBEEF, size);
 	)
 	return ret_val;
 }

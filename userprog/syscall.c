@@ -182,6 +182,8 @@ syscall_handler (struct intr_frame *f) {
 	syscall_args[4] = f->R.r8;
 	syscall_args[5] = f->R.r9;
 
+	//printf("SYSCALL %ld(read=%ld)\n", syscall_num, SYS_READ);
+	thread_current()->rsp = f->rsp;
 	switch(syscall_num){
 		//Project 2
 		case SYS_HALT:
@@ -235,6 +237,7 @@ syscall_handler (struct intr_frame *f) {
 			break;
 		
 		case SYS_READ:
+			//puts("CALL_READ");
 			f->R.rax = syscall_read(syscall_args[0], syscall_args[1], syscall_args[2]);
 			break;
 		

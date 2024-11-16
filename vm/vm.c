@@ -177,33 +177,64 @@ vm_get_frame (void) {
 
 /* Growing the stack. */
 static void
-vm_stack_growth (void *addr UNUSED) {
+vm_stack_growth (void *addr) {
+	ASSERT(vm_claim_page(pg_round_down(addr)));
 }
 
 /* Handle the fault on write_protected page */
 static bool
 vm_handle_wp (struct page *page UNUSED) {
+
 }
 
 /* Return true on success */
 bool
-vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr,
-		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
+vm_try_handle_fault (struct intr_frame *f, void *addr,
+		bool user, bool write, bool not_present) {
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 	struct page *page = NULL;
+
+	//printf("try_handle : %p : user=%d, write=%d, not_present=%d\n",addr, user, write, not_present);
+	//hash_apply(&thread_current()->spt.pages, page_print);
 	/* TODO: Validate the fault */
 	/* TODO: Your code goes here */
 	if(((uintptr_t)addr) >= KERN_BASE)
 		return false;
 	
-	void* pgaddr = pg_round_down(addr);
-	page = spt_find_page(spt, pgaddr);
-	if(page == NULL)
+	if(not_present){
+		void* pgaddr = pg_round_down(addr);
+		page = spt_find_page(spt, pgaddr);
+		if(page == NULL){
+			//SPT가 없지만, stack growth라면 살리도록 한다.
+			if(addr <= USER_STACK && addr >= USER_STACK - 1048576){
+				//printf("Recoverable Stack Pagefault : addr=%p, rsp(if)=%p\n", addr, thread_current()->rsp);
+				//Is rsp value reliable?
+
+				// 배열 선언의 경우, rsp를 먼저 빼고 시작함으로 rsp와 addr이 같다.
+				// 그러나 (-4096)rsp와 같은 비정상적 메모리 접근 시도의 경우, rsp를 먼저 늘리지 않으므로 rsp가 addr보다 크다
+				if(thread_current()->rsp < addr){
+					vm_stack_growth(addr);
+					return true;
+				}
+				if(thread_current()->rsp - ((uintptr_t)addr) < PGSIZE){
+					//PUSH CASE
+					//Stack growth(1 frame)
+					vm_stack_growth(addr);
+					thread_current()->rsp = addr;
+					if(user)
+						f->rsp = addr;
+					return true;
+				}
+			}
+			//DEFAULT ACTION IS DIE
+			return false;
+		}
+		return vm_do_claim_page (page);
+	} else if(write){
+		//puts("WRITE PERMISSION DENIED");
 		return false;
-	/*if(addr <= USER_STACK && addr >= USER_STACK - 1000000){
-		printf("Recoverable Stack Pagefault : addr=%p, rsp(if)=%p\n", addr, f->rsp);
-	}*/
-	return vm_do_claim_page (page);
+	}
+	return false;
 }
 
 /* Free the page.
@@ -243,18 +274,21 @@ vm_do_claim_page (struct page *page) {
 
 	//printf("vm_do_claim_page() : page->va=%p, page->writable=%p\n", page->va, page->writable);
 	void* va = page->va;
-	bool succ = (
-		pml4_get_page (t->pml4, va) == NULL &
-		pml4_set_page(thread_current()->pml4, va, frame->kva, page->writable)
-	);	//TODO : rw may not be always true(think about code section)
+	const bool is_prev_addr_not_exist = (pml4_get_page (t->pml4, va) == NULL);
+	if(!is_prev_addr_not_exist){
+		return false;
+	}
+	//printf("do_claim_page : %p : page->writable = %d\n", page->va, page->writable);
+	bool succ = (is_prev_addr_not_exist & pml4_set_page(thread_current()->pml4, va, frame->kva, page->writable));
 
 	//DEBUG_LOGGER
 	if(!succ){
-		//printf("pml4_get_page(%p) = %p\n", va, vtop(pml4_get_page (t->pml4, va)));
+		printf("pml4_get_page(%p) = %p\n", va, vtop(pml4_get_page (t->pml4, va)));
 		hash_apply(&t->spt.pages, page_print);
+		return false;
 	}
 
-	ASSERT(succ == true);
+	//ASSERT(succ == true);
 	return swap_in (page, frame->kva);
 }
 
@@ -272,11 +306,12 @@ bool page_hash_less_func(const struct hash_elem* a, const struct hash_elem* b, v
 void page_print(struct hash_elem *elem, void* aux UNUSED){
 	struct page* page = hash_entry(elem, struct page, elem);
 	printf(
-		"page : type=%d, va=%p, frame=%p, kva=%p\n", 
+		"page : type=%d, va=%p, frame=%p, kva=%p, writable=%d\n", 
 		page->operations->type, 
 		page->va, 
 		page->frame, 
-		(page->frame == NULL ? NULL : page->frame->kva)
+		(page->frame == NULL ? NULL : page->frame->kva),
+		page->writable
 	);
 }
 /* Initialize new supplemental page table */
@@ -330,6 +365,11 @@ void supplemental_page_table_kill_entry_action(struct hash_elem *element, void *
 	vm_dealloc_page (page);
 	return;
 }
+
+//SPT hash table 자체를 삭제하는 것은 process exit 직전에 한다.
+//왜냐하면 process exec을 했을 때 lazy loading을 하기 위해서는 SPT hash table '자체'는 살아있어야 하기 때문이다.
+//process_exec에서는 process_cleanup()을 통해 SPT_kill을 하지만, 이후 SPT를 다시 init하지 않고 바로 사용한다.
+//즉, SPT_kill에서 hash table자체를 완전히 없앤다면, 오류가 발생할 수밖에 없다.
 void
 supplemental_page_table_kill (struct supplemental_page_table *spt) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread and
