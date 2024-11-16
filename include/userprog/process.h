@@ -20,4 +20,9 @@ void process_seek(struct thread* target, int fd, unsigned position);
 unsigned process_tell(struct thread* target, int fd);
 void process_close(struct thread* target, int fd);
 
+#ifdef VM
+void* process_mmap_file(void* addr, size_t length, int writable, off_t offset);
+void process_munmap_file(void* addr);
+#endif
+
 #endif /* userprog/process.h */

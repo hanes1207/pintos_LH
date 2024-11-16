@@ -185,6 +185,28 @@ syscall_handler (struct intr_frame *f) {
 	//printf("SYSCALL %ld(read=%ld)\n", syscall_num, SYS_READ);
 	thread_current()->rsp = f->rsp;
 	switch(syscall_num){
+		#ifdef VM
+		//Project 3
+		//MMAP과 MUNMAP은 아래의 SYSCALL들과 달리 SYSCALL_MEMCHECK 등을 활용하지 않았다.
+		//TODO : 향후 수정이 필요할 수도
+		case SYS_MMAP:
+			{
+				void* addr = (void*)syscall_args[0];
+				size_t length = (size_t)syscall_args[1];
+				int writable = (int)syscall_args[2];
+				off_t offset = (off_t)syscall_args[3];
+
+				void* ret_val = process_mmap_file(addr, length, writable, offset);
+				f->R.rax = ret_val;
+			}
+			break;
+		case SYS_MUNMAP:
+			{
+				void* addr = (void*)syscall_args[0];
+				process_munmap_file(addr);
+			}
+			break;
+		#endif
 		//Project 2
 		case SYS_HALT:
 			power_off();

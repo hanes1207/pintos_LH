@@ -23,6 +23,7 @@
 #ifdef VM
 #include "vm/vm.h"
 #include "threads/malloc.h"
+#include "vm/file.h"
 #endif
 
 #define SAFE_LOCK_FILESYS(code) if(!lock_held_by_current_thread(&file_lock)){lock_acquire(&file_lock);} code if(lock_held_by_current_thread(&file_lock)){lock_release(&file_lock);}
@@ -42,6 +43,33 @@ struct fork_aux{
 struct lock file_lock;	//Global Filesystem lock
 struct semaphore initd_ordering;
 
+
+#ifdef VM
+void* process_mmap_file(void* addr, size_t length, int writable, off_t offset){
+	
+}
+void process_munmap_file(void* addr){
+
+}
+
+//Project 3 : MMAP system call
+// 굳이 따로 mmap_map을 만들어서 관리하는 이유는
+// REMOVE/CLOSE 되더라도 MUNMAP하기 전까지는 관리가 가능해야 하기 때문이다.
+// 따라서 mmap_map에 따로 관리한다.
+static void
+process_mmap_map_init(struct thread* th){
+
+}
+static void
+process_mmap_map_free(struct thread* th){
+
+}
+static void
+process_mmap_map_duplicate(struct thread* th){
+
+}
+
+#endif
 static void
 process_file_map_init(struct thread* th){
 	th->file_map = (struct file**)malloc(sizeof(struct file*) * FILE_DESC_MAP_SIZE);
