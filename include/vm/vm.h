@@ -41,6 +41,32 @@ struct thread;
  * This is kind of "parent class", which has four "child class"es, which are
  * uninit_page, file_page, anon_page, and page cache (project4).
  * DO NOT REMOVE/MODIFY PREDEFINED MEMBER OF THIS STRUCTURE. */
+
+enum vm_init_aux_type{
+	VM_INIT_LAZY_LOAD,
+	VM_INIT_MMAP_FILE,
+	VM_INIT_SWAPPING
+};
+struct lazy_load_aux{
+	size_t read_from;
+	size_t read_size;
+	size_t zero_bytes;
+};
+struct mmap_load_aux{
+
+};
+struct swap_load_aux{
+
+};
+struct vm_initializer_aux{
+	enum vm_init_aux_type type;
+	union{
+		struct lazy_load_aux lazy_load;
+		struct mmap_load_aux mmap_load;
+		struct swap_load_aux swap_load;
+	};
+ };
+
 struct page {
 	/* struct page : stands for all userspace page */
 	const struct page_operations *operations;

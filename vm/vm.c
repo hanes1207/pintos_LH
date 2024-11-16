@@ -7,6 +7,7 @@
 #include "lib/kernel/list.h"
 #include "threads/mmu.h"
 
+#include <string.h>
 #include <stdio.h>
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
@@ -121,6 +122,13 @@ spt_insert_page (struct supplemental_page_table *spt,
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
+	if(page->frame != NULL){
+		//연결된 프레임 삭제
+		list_remove(&page->frame->elem);
+		palloc_free_page(page->frame->kva);
+		free(page->frame);
+	}
+	hash_delete(&spt->pages, &page->elem);
 	vm_dealloc_page (page);
 	return true;
 }
@@ -155,6 +163,7 @@ vm_get_frame (void) {
 	enum palloc_flags flag = PAL_USER;
 	void* got_frame = palloc_get_page(flag);
 	if(got_frame == NULL){
+		free(frame);
 		PANIC("todo");
 	}
 	frame->kva = got_frame;
@@ -184,6 +193,9 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr,
 	struct page *page = NULL;
 	/* TODO: Validate the fault */
 	/* TODO: Your code goes here */
+	if(((uintptr_t)addr) >= KERN_BASE)
+		return false;
+	
 	void* pgaddr = pg_round_down(addr);
 	page = spt_find_page(spt, pgaddr);
 	if(page == NULL)
@@ -229,14 +241,19 @@ vm_do_claim_page (struct page *page) {
 	/* TODO: Insert page table entry to map page's VA to frame's PA. */
 	struct thread* t = thread_current();
 
+	//printf("vm_do_claim_page() : page->va=%p, page->writable=%p\n", page->va, page->writable);
 	void* va = page->va;
 	bool succ = (
 		pml4_get_page (t->pml4, va) == NULL &
 		pml4_set_page(thread_current()->pml4, va, frame->kva, page->writable)
 	);	//TODO : rw may not be always true(think about code section)
+
+	//DEBUG_LOGGER
 	if(!succ){
+		//printf("pml4_get_page(%p) = %p\n", va, vtop(pml4_get_page (t->pml4, va)));
 		hash_apply(&t->spt.pages, page_print);
 	}
+
 	ASSERT(succ == true);
 	return swap_in (page, frame->kva);
 }
@@ -282,20 +299,105 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 /* Copy supplemental page table from src to dst */
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst,
-		struct supplemental_page_table *src) {
+		struct supplemental_page_table *src) {  // dst는 &current->spt이고, src는 &parent->spt이다
 	ASSERT(dst != NULL && src != NULL);
+	//1. Init dst's hash table
+	hash_init(&dst->pages, page_hash_func, page_hash_less_func, NULL);
+
+	//2. Copy hash table entries
 	struct hash_iterator I;
 	hash_first(&I, &src->pages);
 	while(hash_next(&I)){
-		struct page* p = hash_entry(hash_cur(&I), struct page, elem);
+		struct page *p = hash_entry(hash_cur(&I), struct page, elem);
 		//TODO : Copy page
 		//hash_insert(&dst->pages, /**/);
+        struct page *copied = (struct page *)malloc(sizeof(struct page));
+		spt_entry_copy(copied, p);
+        hash_insert(&dst->pages, &copied->elem);
 	}
+	return true;
 }
 
 /* Free the resource hold by the supplemental page table */
+void supplemental_page_table_kill_entry_action(struct hash_elem *element, void *aux){
+	struct page* page = hash_entry(element, struct page, elem);
+	if(page->frame != NULL){
+		//연결된 프레임 삭제
+		list_remove(&page->frame->elem);
+		//palloc_free_page(page->frame->kva);
+		free(page->frame);
+	}
+	vm_dealloc_page (page);
+	return;
+}
 void
-supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
+supplemental_page_table_kill (struct supplemental_page_table *spt) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread and
 	 * TODO: writeback all the modified contents to the storage. */
+	hash_clear(&spt->pages, supplemental_page_table_kill_entry_action);
 }
+
+bool page_cont_copy (struct page* page, void* aux) {
+	//Exceptionally, for this aux, not free.
+	//Because page_cont_copy will be executed immediately when VM_UNINIT page created.
+	//so, there is no such case these page will be copied before this function
+	//(which can cause copy error)
+	memcpy(page->frame->kva, ((struct page*)aux)->frame->kva, PGSIZE);
+	return true;
+}
+
+void
+spt_entry_copy (struct page *dst, struct page *src) {
+	// Treat different cases
+	struct vm_initializer_aux* uninit_case_copied_aux = NULL;
+	switch(src->operations->type){
+		case VM_UNINIT:
+			uninit_case_copied_aux = malloc(sizeof(struct vm_initializer_aux));
+			memcpy(uninit_case_copied_aux, src->uninit.aux, sizeof(struct vm_initializer_aux));
+			uninit_new(dst, src->va, src->uninit.init, src->uninit.type, uninit_case_copied_aux, src->uninit.page_initializer);
+			dst->writable = src->writable;
+			break;
+		default:
+			//For anon, claim memory immediately.
+            //여기서 uninit을 만드는 가장 중요한 이유는 anon과 file의 경우에 vm_do_claim_page를 바로 하게 되면 parent process의 내용을 긁어 오는게 아니라
+            //file을 다시 로드 한다는 점. 왜냐하면 page.swap_in이 실행횔 때, anon의 경우 anon_swap_in임(uninit의 경우 uninit_initializer)
+            //따라서 uninit page로 initialize하여 vm_do_claim_page에서 swap_in이 page_cont_copy가 되게 하여 parent process
+            //의 내용을 긁어 오게 만든다.
+			uninit_new(dst, src->va, page_cont_copy, src->operations->type, src, 
+				(src->operations->type == VM_ANON) ? anon_initializer : file_backed_initializer
+			);
+			dst->writable = src->writable;
+			vm_do_claim_page(dst);
+			break;
+	}
+    
+
+}
+/*void
+_spt_entry_copy (struct page *dst, struct page *src) {
+	//1. (Shallow) Copy all the things
+	memcpy(dst, src, sizeof(struct page));
+	//2. Remove some 'NOT BE SAME' values
+	dst->frame = NULL;
+	dst->elem.list_elem.next = NULL;
+	dst->elem.list_elem.prev = NULL;
+	//3. Treat different cases
+	switch(src->operations->type){
+		case VM_UNINIT:
+			//For uninit(not yet loaded on memory), not get frames immediately.
+			struct vm_initializer_aux *copied_aux = malloc(sizeof(struct vm_initializer_aux));
+			memcpy(copied_aux, src->uninit.aux, sizeof(struct vm_initializer_aux));
+			dst->uninit.aux = copied_aux;
+			break;
+		case VM_ANON:
+			//For anon, claim memory immediately.
+			vm_do_claim_page(dst);
+			//Problem. CONTENT DIFFERS!
+			break;
+		case VM_FILE:
+			PANIC("NOT YET");
+			break;
+	}
+    
+
+}*/

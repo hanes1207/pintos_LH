@@ -366,6 +366,12 @@ __do_fork (void *aux) {
 
 	process_activate (current);
 #ifdef VM
+	//VM 할 때 아마 이게 위로 올라가야 할 것 같다(그래야 복사할 때 lazy loading할 file에 문제가 생기지 않을 것)
+	SAFE_LOCK_FILESYS(
+	if(parent->exec_file != NULL)
+		current -> exec_file = file_duplicate(parent->exec_file);	/*ROX-CHILD, ROX-MULTICHILD*/
+	)
+
 	supplemental_page_table_init (&current->spt);
 	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
 		goto error;
@@ -383,10 +389,8 @@ __do_fork (void *aux) {
 	process_init ();
 	// file duplicate
 	//printf("__do_fork(): thread_name=%s, file duplication\n", current->name);
-	SAFE_LOCK_FILESYS(
-	if(parent->exec_file != NULL)
-		current -> exec_file = file_duplicate(parent->exec_file);	/*ROX-CHILD, ROX-MULTICHILD*/
-	)
+
+	
     process_file_map_duplicate(current, parent);
 	sema_up(&parent->fork_sema);
 	free(aux);
@@ -496,6 +500,10 @@ process_exit (void) {
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 	process_cleanup ();
+	#ifdef VM
+		//SPT 자원 누수 방지
+		hash_destroy(&curr->spt.pages, NULL);
+	#endif
 	//Allow all child's resource free before die
 	lock_acquire(&curr->child_procs_lock);
 	for(
@@ -539,6 +547,7 @@ process_cleanup (void) {
 
 #ifdef VM
 	supplemental_page_table_kill (&curr->spt);
+	//puts("PROCESS_CLEANUP_SPT_KILLED");
 #endif
 
 	uint64_t *pml4;
@@ -956,25 +965,33 @@ install_page (void *upage, void *kpage, bool writable) {
 /* From here, codes will be used after project 3.
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
-struct lazy_load_aux{
-	struct file* exec_file;
-	size_t read_from;
-	size_t read_size;
-};
+
 
 static bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
-	struct lazy_load_aux * laux = aux;
+	ASSERT(((struct vm_initializer_aux*)aux)->type == VM_INIT_LAZY_LOAD);
+	struct lazy_load_aux * laux = &((struct vm_initializer_aux*)aux)->lazy_load;
+
+	struct file* exec_file = thread_current()->exec_file;
 	size_t actual_read = 0;
 	bool ret_status = false;
 	//printf("lazy_load_segment() for addr[%p]\n", page->va);
-	SAFE_LOCK_FILESYS(
-		actual_read = file_read_at(laux->exec_file, page->frame->kva, laux->read_size, laux->read_from);
-		ret_status = actual_read == laux->read_size;
-	)
+
+	const bool skip_sync = lock_held_by_current_thread(&file_lock);
+	if(!skip_sync){
+		lock_acquire(&file_lock);
+	}
+	actual_read = file_read_at(exec_file, page->frame->kva, laux->read_size, laux->read_from);
+	ret_status = actual_read == laux->read_size;
+	if(!skip_sync){
+		lock_release(&file_lock);
+	}
+	//Zero bytes
+	memset(page->frame->kva + actual_read, 0, laux->zero_bytes);
+	
 	//This aux data no longer needed
 	free(aux);
 	return ret_status;
@@ -1012,10 +1029,11 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		struct lazy_load_aux *aux = malloc(sizeof(struct lazy_load_aux));
-		aux->exec_file = file;
-		aux->read_from = file_read_from;
-		aux->read_size = page_read_bytes;
+		struct vm_initializer_aux *aux = malloc(sizeof(struct vm_initializer_aux));
+		aux->type = VM_INIT_LAZY_LOAD;
+		aux->lazy_load.read_from = file_read_from;
+		aux->lazy_load.read_size = page_read_bytes;
+		aux->lazy_load.zero_bytes = page_zero_bytes;
 		file_read_from += page_read_bytes;
 
 		//void *aux = NULL;
