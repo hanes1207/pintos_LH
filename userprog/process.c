@@ -160,13 +160,12 @@ int process_read(struct thread* target, int fd, void* buffer, unsigned size){
 	if(page != NULL){
 		//printf("found page : va=%p, writable=%d\n", page->va, page->writable);
 		if(!page->writable){
+			//puts("READ() : NOT_WRITABLE_ERROR");
 			thread_exit();
 		}
 		//vm_claim_page(pg_round_down(buffer));
 	} else {
-		//NOT FOUND FROM SPT -> NOT VALID
-		//puts("NOT FOUND");
-		thread_exit();
+		//NOT FOUND FROM SPT -> NOT VALID OR SHOULD BE HANDLED BY PAGE FAULT
 	}
 	#endif
 	int ret_val;

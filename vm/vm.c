@@ -216,7 +216,7 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 					vm_stack_growth(addr);
 					return true;
 				}
-				if(thread_current()->rsp - ((uintptr_t)addr) < PGSIZE){
+				if(thread_current()->rsp - ((uintptr_t)addr) < 16){
 					//PUSH CASE
 					//Stack growth(1 frame)
 					vm_stack_growth(addr);
@@ -227,6 +227,8 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 				}
 			}
 			//DEFAULT ACTION IS DIE
+			//puts("BAD_STACK_GROWTH_ERROR");
+			thread_exit();	//죽어라 히히
 			return false;
 		}
 		return vm_do_claim_page (page);

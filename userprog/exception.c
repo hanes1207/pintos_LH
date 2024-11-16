@@ -146,13 +146,9 @@ page_fault (struct intr_frame *f) {
 
 #ifdef VM
 	/* For project 3 and later. */
-	//puts("########## PAGE FAULT ##########");
-	if (vm_try_handle_fault (f, fault_addr, user, write, not_present)){
+	bool is_handled = false;
+	if (is_handled = vm_try_handle_fault (f, fault_addr, user, write, not_present)){
 		return;
-	}
-	//Failed to handle -> Die silently...
-	else {
-		thread_exit ();
 	}
 #endif
 
