@@ -35,6 +35,7 @@ file_backed_swap_in (struct page *page, void *kva) {
 	SAFE_LOCK_FILESYS(
 		file_read_at(file_page->aux.target_file, kva, file_page->aux.cont_end, file_page->aux.start_file);
 	)
+	return true;
 }
 
 /* Swap out the page by writeback contents to the file. */
@@ -44,6 +45,7 @@ file_backed_swap_out (struct page *page) {
 	SAFE_LOCK_FILESYS(
 		file_write_at(file_page->aux.target_file, page->va, file_page->aux.cont_end, file_page->aux.start_file);
 	)
+	return true;
 }
 
 /* Destory the file backed page. PAGE will be freed by the caller. */

@@ -83,16 +83,20 @@ void* process_mmap_file(void* addr, size_t length, int writable, int fd, off_t o
 	//printf("mmap syscall (%p, %d, %d)\n", addr, length, offset);
 	struct thread* th = thread_current();
 
-	if(addr == NULL || length <= 0 || addr >= KERN_BASE || addr + length >= KERN_BASE || length >= KERN_BASE)
+	if(addr == NULL || length <= 0 || addr >= KERN_BASE || addr + length >= KERN_BASE || length >= KERN_BASE){
+		//puts("Kernel protection");
 		return NULL;
-	
-	if (((uintptr_t)addr % PGSIZE) != 0 || offset % PGSIZE != 0)
+	}
+	if (((uintptr_t)addr % PGSIZE) != 0 || offset % PGSIZE != 0){
+		//puts("Invalid addr, offset");
         return NULL;
-	
+	}
 	if(fd == 0 || fd == 1 || fd > 256 || fd < 0){
+		//puts("Invalid file descriptor");
 		return NULL;
 	}
 	if(thread_current()->file_map[fd] == NULL){
+		//puts("File descriptor not present");
 		return NULL;
 	}
 
@@ -361,8 +365,10 @@ process_file_map_duplicate(struct thread* target, const struct thread* original)
 
 static int process_get_new_fd(struct thread* target){
 	const int ret_fd = target->file_next_desc;
-	if(ret_fd >= FILE_DESC_MAP_SIZE)
+	//printf("process_get_new_fd() : ret_fd = %d\n",ret_fd);
+	if(ret_fd >= FILE_DESC_MAP_SIZE){
 		return -1;
+	}
 	target->file_next_desc++;
 	return ret_fd;
 }

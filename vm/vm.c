@@ -249,6 +249,8 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 			//printf("BAD_STACK_GROWTH_ERROR\n");
 			thread_exit();	//죽어라 히히
 			return false;
+		} else {
+			//printf("\tFound on SPT\n");
 		}
 		//If found or made new SPT page, then 
 		//	vm_do_claim_page will run swap_in()
