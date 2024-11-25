@@ -26,9 +26,6 @@
 #include "vm/file.h"
 #endif
 
-#define SAFE_LOCK_FILESYS(code) if(!lock_held_by_current_thread(&file_lock)){lock_acquire(&file_lock);} code if(lock_held_by_current_thread(&file_lock)){lock_release(&file_lock);}
-
-
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
@@ -40,33 +37,282 @@ struct fork_aux{
 };
 
 
-struct lock file_lock;	//Global Filesystem lock
+struct lock file_lock;	//Global Filesystem lock (Declared in thread.h)
 struct semaphore initd_ordering;
 
 
 #ifdef VM
-void* process_mmap_file(void* addr, size_t length, int writable, off_t offset){
+static struct mmap_map_elem* 
+mmap_map_elem_new(struct thread* th, void* addr, size_t length, int writable, int fd, off_t offset);
+
+static void
+mmap_map_elem_free_func(struct hash_elem* e, void* aux UNUSED);
+
+static bool
+lazy_load_file_map(struct page* page, void* aux){ 
+	//1. Load file data from aux
+	ASSERT(((struct vm_initializer_aux*)aux)->type == VM_INIT_MMAP_FILE);
+	ASSERT(page->frame != NULL);
+	struct mmap_load_aux * maux = &((struct vm_initializer_aux*)aux)->mmap_load;
+	/*printf("LAZY_LOAD : page->va=%p, maux->start_file=%d, maux->cont_start=%d, maux->cont_end=%d\n", 
+		page->va, maux->start_file, maux->cont_start, maux->cont_end
+	);*/
+	struct file* load_target = maux->target_file;
+	bool ret_status = false;
+	size_t actual_read = 0;
+	size_t to_read = maux->cont_end;
+
+	//1-1. 일단 0으로 다 채운다.
+	memset(page->frame->kva, 0, PGSIZE);
+	//1-2. 실제로 파일에서 읽어온다.
+	SAFE_LOCK_FILESYS(
+		actual_read = file_read_at(maux->target_file, page->frame->kva, to_read, maux->start_file);
+	)
+	ret_status = true;
+	//printf("LAZY_LOAD : ret_status=%d\n", ret_status);
 	
+	//2. Save which file and how much to read (from aux)
+	// 		into struct file_page
+	page->file.aux = *maux;
+
+	//3. Free aux
+	free(aux);
+	return ret_status;
+}
+void* process_mmap_file(void* addr, size_t length, int writable, int fd, off_t offset){
+	//printf("mmap syscall (%p, %d, %d)\n", addr, length, offset);
+	struct thread* th = thread_current();
+
+	if(addr == NULL || length <= 0 || addr >= KERN_BASE || addr + length >= KERN_BASE || length >= KERN_BASE)
+		return NULL;
+	
+	if (((uintptr_t)addr % PGSIZE) != 0 || offset % PGSIZE != 0)
+        return NULL;
+	
+	if(fd == 0 || fd == 1 || fd > 256 || fd < 0){
+		return NULL;
+	}
+	if(thread_current()->file_map[fd] == NULL){
+		return NULL;
+	}
+
+	struct mmap_map_elem* melem = mmap_map_elem_new(thread_current(), addr, length, writable, fd, offset);
+	hash_insert(&thread_current()->mmap_map, &melem->elem);
+	
+	int cursor = 0;
+	int file_index = offset;
+	struct vm_initializer_aux* aux = NULL;
+	while(cursor <= length){
+		aux = malloc(sizeof(struct vm_initializer_aux));
+		aux->type = VM_INIT_MMAP_FILE;
+		aux->mmap_load.target_file = melem->file;
+		aux->mmap_load.start_file = offset + cursor;
+		if(aux->mmap_load.start_file + PGSIZE < offset + length)
+			aux->mmap_load.cont_end = PGSIZE;
+		else
+			aux->mmap_load.cont_end = (offset + length) - aux->mmap_load.start_file;
+		
+		if(!vm_alloc_page_with_initializer(VM_FILE, addr + cursor, writable, 
+			lazy_load_file_map, aux
+		)){
+			//TODO : Need to free PREVIOUSLY ALLOCATED aux
+			free(aux);
+			return NULL;
+		}
+		/*printf("va=%p, aux->mmap_load.start_file=%d, aux->mmap_load.cont_end=%d\n", 
+			addr + cursor,
+			aux->mmap_load.start_file,
+			aux->mmap_load.cont_end
+		);*/
+		cursor += PGSIZE;
+	}
+	/*for(int i=0; i< pg_start ; ++i){
+		//Offset 이전의 페이지들을 먼저 만든다.
+		aux = malloc(sizeof(struct vm_initializer_aux));
+		aux->type = VM_INIT_MMAP_FILE;
+		SAFE_LOCK_FILESYS(
+			aux->mmap_load.target_file = file_duplicate(thread_current()->file_map[fd]);
+		)
+		aux->mmap_load.start_file = i * PGSIZE;
+		aux->mmap_load.cont_start = PGSIZE;
+		aux->mmap_load.cont_end = PGSIZE;
+		if(!vm_alloc_page_with_initializer(VM_FILE, addr + file_index, writable, 
+			lazy_load_file_map, aux
+		)){
+			//TODO : Need to free PREVIOUSLY ALLOCATED aux
+			free(aux);
+			return NULL;
+		}
+	}
+
+	// 먼저 정렬 안되어 있는 앞부분 하나 만든다.
+    file_index = pg_start * PGSIZE;
+    aux = malloc(sizeof(struct vm_initializer_aux));
+    aux->type = VM_INIT_MMAP_FILE;
+	aux->mmap_load.start_file = file_index;
+	SAFE_LOCK_FILESYS(
+		aux->mmap_load.target_file = file_duplicate(thread_current()->file_map[fd]);
+	)
+    aux->mmap_load.cont_start = offset - file_index;
+    if (((aux->mmap_load.cont_start + length) / PGSIZE) == 0) {
+        aux->mmap_load.cont_end = aux->mmap_load.cont_start + length;
+    } else {
+		aux->mmap_load.cont_end = PGSIZE;
+	}
+
+	if(!vm_alloc_page_with_initializer(VM_FILE, addr + file_index, writable, 
+		lazy_load_file_map, aux
+	)){
+		//TODO : Need to free PREVIOUSLY ALLOCATED aux
+		free(aux);
+		return NULL;
+	}
+    file_index += PGSIZE;
+
+	//Offset을 포함하지 않는 이후의 페이지들을 만든다.
+    while (file_index < offset + length) {
+        aux = malloc(sizeof(struct vm_initializer_aux));
+        aux->type = VM_INIT_MMAP_FILE;
+		SAFE_LOCK_FILESYS(
+			aux->mmap_load.target_file = file_duplicate(thread_current()->file_map[fd]);
+		)
+        aux->mmap_load.start_file = file_index;
+        aux->mmap_load.cont_start = 0;
+        if (file_index + PGSIZE < offset + length) {
+			aux->mmap_load.cont_end = PGSIZE;
+        } else {
+			aux->mmap_load.cont_end = (offset + length) - file_index;
+		}
+		if(!vm_alloc_page_with_initializer(VM_FILE, addr + file_index, writable, 
+			lazy_load_file_map, aux
+		)){
+			//TODO : Need to free PREVIOUSLY ALLOCATED aux
+			free(aux);
+			return NULL;
+		}
+        file_index += PGSIZE;
+    }*/
+	return addr;
 }
 void process_munmap_file(void* addr){
+	struct thread* th = thread_current();
+	//puts("MUNMAP");
 
+	struct mmap_map_elem melem;
+	melem.addr = addr;
+	
+	struct hash_elem* elem = hash_find(&th->mmap_map, &melem.elem);
+	if(elem == NULL){
+		//puts("NOT FOUND");
+		return;
+	}
+	mmap_map_elem_free_func(hash_delete(&th->mmap_map, elem), NULL);
 }
 
 //Project 3 : MMAP system call
 // 굳이 따로 mmap_map을 만들어서 관리하는 이유는
 // REMOVE/CLOSE 되더라도 MUNMAP하기 전까지는 관리가 가능해야 하기 때문이다.
 // 따라서 mmap_map에 따로 관리한다.
+//- 타입 : mmap_map<void* -> struct file*>
+static uint64_t
+mmap_map_elem_hash_func(const struct hash_elem* e, void* aux UNUSED){
+	uint64_t target_val = hash_entry(e, struct mmap_map_elem, elem)->addr;
+	target_val >>= PGBITS;
+	target_val %= 17;
+	return target_val;
+}
+static bool
+mmap_map_elem_less_func(const struct hash_elem * a, const struct hash_elem *b){
+	return ((uint64_t)(hash_entry(a, struct mmap_map_elem, elem)->addr)) 
+		< ((uint64_t)(hash_entry(b, struct mmap_map_elem, elem)->addr));
+}
+static void
+mmap_map_elem_free_func(struct hash_elem* e, void* aux UNUSED){
+	struct thread* th = thread_current();
+	struct mmap_map_elem* mmap_elem = hash_entry(e, struct mmap_map_elem, elem);
+	ASSERT(mmap_elem != NULL);
+	ASSERT(mmap_elem->file != NULL);
+	ASSERT(mmap_elem->addr != NULL);
+	//puts("mmap_map_elem_free_func");
+	const int pgcount = mmap_elem->length / PGSIZE + (mmap_elem->length % PGSIZE == 0 ? 0 : 1);
+	for(int i=0; i<pgcount; ++i){
+		struct page* pg = spt_find_page(&th->spt, mmap_elem->addr + i * PGSIZE);
+		//printf("Saving pg(%p)\n", pg->va);
+		ASSERT(pg != NULL);
+		if(pg->operations->type == VM_FILE){
+			//Once loaded page...
+			if(mmap_elem->writable){
+				//If writable was true.
+				if(pg->frame != NULL){
+					//printf("WRITE INTO : %d, %d\n", pg->file.aux.start_file, pg->file.aux.cont_end);
+					//printf("CONTENT:[%s]\n",pg->frame->kva);
+					SAFE_LOCK_FILESYS(
+						file_write_at(mmap_elem->file, pg->frame->kva,pg->file.aux.cont_end, pg->file.aux.start_file);
+					)
+				}
+			}
+		} else {
+			//Not loaded page...
+			//free(pg->uninit.aux);
+		}
+		spt_remove_page(&th->spt, pg);
+	}
+	SAFE_LOCK_FILESYS(
+		file_close(mmap_elem->file);
+	)
+	
+	//Free
+	free(mmap_elem);
+}
+static struct mmap_map_elem* 
+mmap_map_elem_new(struct thread* th, void* addr, size_t length, int writable, int fd, off_t offset){
+	ASSERT(th != NULL);
+	if((uintptr_t)addr & PGMASK){
+		return NULL;
+	}
+	if(fd == 0 || fd == 1 || th->file_map[fd] == NULL){
+		return NULL;
+	}
+	struct mmap_map_elem* mmap_elem = malloc(sizeof(struct mmap_map_elem));
+	mmap_elem -> addr = addr;
+	mmap_elem -> length = length;
+	mmap_elem -> writable = writable;
+	mmap_elem -> offset = offset;
+	SAFE_LOCK_FILESYS(
+		mmap_elem->file = file_duplicate(th->file_map[fd]);
+	)
+
+	return mmap_elem;
+}
 static void
 process_mmap_map_init(struct thread* th){
-
+	ASSERT(th != NULL);
+	hash_init(&th->mmap_map, mmap_map_elem_hash_func, mmap_map_elem_less_func, NULL);
 }
 static void
 process_mmap_map_free(struct thread* th){
-
+	ASSERT(th != NULL);
+	hash_destroy(&th->mmap_map, mmap_map_elem_free_func);
 }
 static void
-process_mmap_map_duplicate(struct thread* th){
+process_mmap_map_duplicate(struct thread* dst_t, struct thread* src_t){
+	//Must be called after process_file_map_duplicate.
+	ASSERT(src_t != NULL && dst_t != NULL);
+	//hash_init(&dst_t->mmap_map, mmap_map_elem_hash_func, mmap_map_elem_less_func, NULL);
 
+	struct hash_iterator iter;
+	hash_first(&iter, &src_t->mmap_map);
+	while(hash_next(&iter)){
+		struct mmap_map_elem* mmap_elem = hash_entry(hash_cur(&iter), struct mmap_map_elem, elem);
+		struct mmap_map_elem* copied = malloc(sizeof(struct mmap_map_elem));
+		copied->addr = mmap_elem->addr;
+		copied->length = mmap_elem->length;
+		copied->writable = mmap_elem->writable;
+		copied->offset = mmap_elem->offset;
+		copied->file = file_duplicate(mmap_elem->file);
+
+		hash_insert(&dst_t->mmap_map, &copied->elem);
+	}
 }
 
 #endif
@@ -278,6 +524,7 @@ process_init (void) {
 	struct thread *current = thread_current ();
 	current->is_process = true;
 	process_file_map_init(current);
+	process_mmap_map_init(current);
 	lock_acquire(&current->parent->child_procs_lock);
 	struct list* child_proc_list = &current->parent->child_procs;
 	list_push_back(child_proc_list, &current->proc_elem);
@@ -439,6 +686,7 @@ __do_fork (void *aux) {
 
 	
     process_file_map_duplicate(current, parent);
+	process_mmap_map_duplicate(current, parent);
 	sema_up(&parent->fork_sema);
 	free(aux);
 	parent->fork_child_tid = current->tid;
@@ -480,7 +728,9 @@ process_exec (void *f_name) {
 			thread_current()->exec_file = NULL;
 		}
 	)
+	process_mmap_map_free(thread_current());
 	process_cleanup ();
+	process_mmap_map_init(thread_current());
 	//printf("file_name : %s\n", file_name);
 	/* And then load the binary */
 	success = load (file_name, &_if);
@@ -546,6 +796,7 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
+	process_mmap_map_free(curr);
 	process_cleanup ();
 	#ifdef VM
 		//SPT 자원 누수 방지
@@ -568,6 +819,7 @@ process_exit (void) {
 	sema_up(&curr->wait_hang_sema);
 	//After getting resource_free_semaphore(allow for exit from parent, means wait called.)
 	sema_down(&curr->res_free_sema);
+	
 	
 	process_file_map_free(curr);
 
@@ -1086,7 +1338,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		//void *aux = NULL;
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
 					writable, lazy_load_segment, aux)){
-			PANIC("FAILED TO ALLOCATE PAGE");
+			PANIC("FAILED TO ALLOCATE SPT PAGE");
 			return false;
 		}
 		

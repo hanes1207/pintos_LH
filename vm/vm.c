@@ -108,7 +108,7 @@ spt_insert_page (struct supplemental_page_table *spt,
 		struct page *page) {
 	int succ = false;
 	/* TODO: Fill this function. */
-	//printf("#### spt_insert_page()\n");
+	//printf("#### spt_insert_page(), va=%p\n", page->va);
 	if(spt_find_page(spt, page->va) == NULL){
 		hash_insert(&spt->pages, &page->elem);
 		//printf("#### spt_insert_page() succeed\n");
@@ -122,10 +122,12 @@ spt_insert_page (struct supplemental_page_table *spt,
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
+	//printf("page : va=%p, type=%d, frame=%p\n",page->va,page->operations->type, page->frame);
 	if(page->frame != NULL){
 		//연결된 프레임 삭제
 		list_remove(&page->frame->elem);
 		palloc_free_page(page->frame->kva);
+		pml4_clear_page(thread_current()->pml4, page->va);
 		free(page->frame);
 	}
 	hash_delete(&spt->pages, &page->elem);
@@ -137,7 +139,11 @@ spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 static struct frame *
 vm_get_victim (void) {
 	struct frame *victim = NULL;
-	 /* TODO: The policy for eviction is up to you. */
+	/* TODO: The policy for eviction is up to you. */
+	// Simple is the best -> FIFO!
+	struct list_elem* elem = list_pop_front(&frame_list);
+	//struct list_elem* elem = list_pop_back(&frame_list);	//Just for check swap-file w/o swap-anon
+	victim = list_entry(elem, struct frame, elem);
 
 	return victim;
 }
@@ -146,10 +152,10 @@ vm_get_victim (void) {
  * Return NULL on error.*/
 static struct frame *
 vm_evict_frame (void) {
-	struct frame *victim UNUSED = vm_get_victim ();
+	struct frame *victim = vm_get_victim ();
 	/* TODO: swap out the victim and return the evicted frame. */
-
-	return NULL;
+	swap_out(victim->page);
+	return victim;
 }
 
 /* palloc() and get frame. If there is no available page, evict the page
@@ -163,11 +169,24 @@ vm_get_frame (void) {
 	enum palloc_flags flag = PAL_USER;
 	void* got_frame = palloc_get_page(flag);
 	if(got_frame == NULL){
+		//printf("vm_get_frame () : palloc failed\n");
 		free(frame);
-		PANIC("todo");
+		//VM - Swapping
+		frame = vm_evict_frame();	//Swap-out
+		//printf("\tevicted frame(%p) : frame->kva=%p, frame->page->va=%p\n", frame, frame->kva, frame->page->va);
+		//frame->kva is already allocated before(this frame is recycled frame)
+
+		//Mark the original page that it doesn't have this frame any longer.
+		frame->page->frame = NULL;
+		//Manipulate "REAL" page table to point nothing
+		pml4_clear_page(thread_current()->pml4, frame->page->va);
+		//Make this frame connected to no page
+		frame->page = NULL;
+	} else {
+		//Free frame exists -> Palloc succeed
+		frame->kva = got_frame;
+		frame->page = NULL;
 	}
-	frame->kva = got_frame;
-	frame->page = NULL;
 	list_push_back(&frame_list, &frame->elem);
 
 	ASSERT (frame != NULL);
@@ -227,10 +246,13 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 				}
 			}
 			//DEFAULT ACTION IS DIE
-			//puts("BAD_STACK_GROWTH_ERROR");
+			//printf("BAD_STACK_GROWTH_ERROR\n");
 			thread_exit();	//죽어라 히히
 			return false;
 		}
+		//If found or made new SPT page, then 
+		//	vm_do_claim_page will run swap_in()
+		//	so, swap_in will be done there.
 		return vm_do_claim_page (page);
 	} else if(write){
 		//puts("WRITE PERMISSION DENIED");

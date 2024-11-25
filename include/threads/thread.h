@@ -176,6 +176,7 @@ struct thread {
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+	struct hash mmap_map;	//hash<void*, file*>
     uintptr_t rsp;
 #endif
 
@@ -183,12 +184,26 @@ struct thread {
 	struct intr_frame tf;               /* Information for switching */
 	unsigned magic;                     /* Detects stack overflow. */
 };
+struct mmap_map_elem{
+	void* addr;
+	size_t length;
+	int writable;
+	off_t offset;
+
+	struct file* file;
+
+	struct hash_elem elem;
+};
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
 extern struct list sema_waiters_list;	// List of semaphores
+
+//For VM, SWAP-IN/OUT
+extern struct lock file_lock;
+#define SAFE_LOCK_FILESYS(code) if(!lock_held_by_current_thread(&file_lock)){lock_acquire(&file_lock);} code if(lock_held_by_current_thread(&file_lock)){lock_release(&file_lock);}
 
 void thread_init (void);
 void thread_start (void);

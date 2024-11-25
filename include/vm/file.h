@@ -8,7 +8,7 @@ enum vm_type;
 
 struct file_page {
 	struct file* file;
-	
+	struct mmap_load_aux aux;
 };
 
 void vm_file_init (void);

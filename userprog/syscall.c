@@ -194,9 +194,10 @@ syscall_handler (struct intr_frame *f) {
 				void* addr = (void*)syscall_args[0];
 				size_t length = (size_t)syscall_args[1];
 				int writable = (int)syscall_args[2];
-				off_t offset = (off_t)syscall_args[3];
+				int fd = (int)syscall_args[3];
+				off_t offset = (off_t)syscall_args[4];
 
-				void* ret_val = process_mmap_file(addr, length, writable, offset);
+				void* ret_val = process_mmap_file(addr, length, writable, fd, offset);
 				f->R.rax = ret_val;
 			}
 			break;

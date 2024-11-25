@@ -2,6 +2,10 @@
 
 #include "vm/vm.h"
 #include "devices/disk.h"
+#include "threads/synch.h"
+
+struct lock swap_disk_lock;
+#define SAFE_LOCK_SWAPDISK(code) if(!lock_held_by_current_thread(&swap_disk_lock)){lock_acquire(&swap_disk_lock);} code if(lock_held_by_current_thread(&swap_disk_lock)){lock_release(&swap_disk_lock);}
 
 /* DO NOT MODIFY BELOW LINE */
 static struct disk *swap_disk;
@@ -21,7 +25,12 @@ static const struct page_operations anon_ops = {
 void
 vm_anon_init (void) {
 	/* TODO: Set up the swap_disk. */
-	swap_disk = NULL;
+	//swap_disk = NULL;
+	lock_init(&swap_disk_lock);
+	swap_disk = disk_get(1,1);
+	//printf("Swap disk size = %"PRDSNu"\n", disk_size(swap_disk));
+	
+
 }
 
 /* Initialize the file mapping */
@@ -37,17 +46,23 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 static bool
 anon_swap_in (struct page *page, void *kva) {
 	struct anon_page *anon_page = &page->anon;
+	SAFE_LOCK_SWAPDISK(
+
+	)
 }
 
 /* Swap out the page by writing contents to the swap disk. */
 static bool
 anon_swap_out (struct page *page) {
 	struct anon_page *anon_page = &page->anon;
+	SAFE_LOCK_SWAPDISK(
+
+	)
 }
 
 /* Destroy the anonymous page. PAGE will be freed by the caller. */
 static void
 anon_destroy (struct page *page) {
 	struct anon_page *anon_page = &page->anon;
-	
+	//Free swap disk sectors
 }
